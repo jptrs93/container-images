@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: ghcr.io/jptrs93/pg18backrest:${IMAGE_TAG:-latest}
+    image: ghcr.io/jptrs93/declarative-postgres-backrest:${IMAGE_TAG:-18.4_2.58.0_v1}
     restart: unless-stopped
     env_file: .env
     volumes:

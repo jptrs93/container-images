@@ -1,6 +1,6 @@
 # Docker Compose Example
 
-This directory is a local Docker Compose example, not the required deployment model for `pg18backrest`.
+This directory is a local Docker Compose example, not the required deployment model for `declarative-postgres-backrest`.
 
 Copy `.env.example` to `.env`, replace its placeholders, then run:
 

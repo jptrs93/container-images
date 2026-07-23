@@ -1,5 +1,5 @@
 settings:
-  max_connections: 75
+  max_connections: 50
 hba:
   - host all all all scram-sha-256
 initdb:
@@ -10,7 +10,7 @@ pgbackrest:
   enabled: true
   stanza: integration
   s3:
-    host: pg18backrest-backup-minio
+    host: declarative-postgres-backrest-backup-minio
     port: 9000
     bucket: postgres-backups
     verify_tls: false
@@ -25,6 +25,13 @@ roles:
     password: ${INTEGRATION_OWNER_PASSWORD}
   - name: reader_one
     password: ${INTEGRATION_READER_ONE_PASSWORD}
+    permissions:
+      - database: app
+        schema: app
+        grants:
+          - USAGE
+        table_grants:
+          - SELECT
   - name: reader_two
     password: ${INTEGRATION_READER_TWO_PASSWORD}
     permissions:
@@ -45,20 +52,11 @@ roles:
           - SELECT
           - INSERT
           - UPDATE
-  - name: audit_reader
-    password: ${INTEGRATION_AUDIT_READER_PASSWORD}
-    permissions:
-      - database: app
-        schema: app
-        grants:
-          - USAGE
-        table_grants:
-          - SELECT
+          - DELETE
 databases:
   - name: app
     owner: app_owner
     schemas:
       - app
-      - analytics
     extensions:
       - pgcrypto

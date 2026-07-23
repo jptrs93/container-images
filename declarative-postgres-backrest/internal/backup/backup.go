@@ -12,8 +12,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jptrs93/container-images/pg18backrest/internal/config"
-	"github.com/jptrs93/container-images/pg18backrest/internal/status"
+	"github.com/jptrs93/container-images/declarative-postgres-backrest/internal/config"
+	"github.com/jptrs93/container-images/declarative-postgres-backrest/internal/status"
 	"github.com/robfig/cron/v3"
 )
 

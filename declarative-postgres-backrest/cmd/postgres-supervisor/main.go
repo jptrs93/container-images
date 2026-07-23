@@ -13,10 +13,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jptrs93/container-images/pg18backrest/internal/backup"
-	"github.com/jptrs93/container-images/pg18backrest/internal/config"
-	"github.com/jptrs93/container-images/pg18backrest/internal/reconciler"
-	"github.com/jptrs93/container-images/pg18backrest/internal/status"
+	"github.com/jptrs93/container-images/declarative-postgres-backrest/internal/backup"
+	"github.com/jptrs93/container-images/declarative-postgres-backrest/internal/config"
+	"github.com/jptrs93/container-images/declarative-postgres-backrest/internal/reconciler"
+	"github.com/jptrs93/container-images/declarative-postgres-backrest/internal/status"
 )
 
 const supervisorStatePath = "/var/lib/postgresql/supervisor-state"

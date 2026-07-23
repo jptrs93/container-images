@@ -2,11 +2,11 @@ FROM golang:1.25.0-bookworm AS supervisor-build
 
 WORKDIR /src
 
-COPY pg18backrest/go.mod pg18backrest/go.sum ./
+COPY declarative-postgres-backrest/go.mod declarative-postgres-backrest/go.sum ./
 RUN go mod download
 
-COPY pg18backrest/cmd ./cmd
-COPY pg18backrest/internal ./internal
+COPY declarative-postgres-backrest/cmd ./cmd
+COPY declarative-postgres-backrest/internal ./internal
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags='-s -w' -o /postgres-supervisor ./cmd/postgres-supervisor
 
 FROM postgres:18.4-bookworm

@@ -10,7 +10,7 @@ pgbackrest:
   enabled: false
   stanza: integration
   s3:
-    host: pg18backrest-restore-minio
+    host: declarative-postgres-backrest-restore-minio
     port: 9000
     bucket: postgres-backups
     verify_tls: false

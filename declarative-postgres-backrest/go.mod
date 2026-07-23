@@ -1,4 +1,4 @@
-module github.com/jptrs93/container-images/pg18backrest
+module github.com/jptrs93/container-images/declarative-postgres-backrest
 
 go 1.25
 

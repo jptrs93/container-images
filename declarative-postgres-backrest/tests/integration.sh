@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-image="${1:-pg18backrest:test}"
+image="${1:-declarative-postgres-backrest:test}"
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-config_file="$repository_root/pg18backrest/tests/config.yaml"
-reconciled_config_file="$repository_root/pg18backrest/tests/reconciled-config.yaml"
-restore_config_file="$repository_root/pg18backrest/tests/restore-config.yaml"
-invalid_config_file="$repository_root/pg18backrest/tests/invalid-owner-config.yaml"
+config_file="$repository_root/declarative-postgres-backrest/tests/config.yaml"
+reconciled_config_file="$repository_root/declarative-postgres-backrest/tests/reconciled-config.yaml"
+restore_config_file="$repository_root/declarative-postgres-backrest/tests/restore-config.yaml"
+invalid_config_file="$repository_root/declarative-postgres-backrest/tests/invalid-owner-config.yaml"
 suffix="$(date +%s)"
-network="pg18backrest-test-${suffix}"
-backup_minio="pg18backrest-backup-minio-${suffix}"
-restore_minio="pg18backrest-restore-minio-${suffix}"
-primary="pg18backrest-primary-${suffix}"
-restore="pg18backrest-restore-${suffix}"
-invalid="pg18backrest-invalid-${suffix}"
-primary_volume="pg18backrest-primary-data-${suffix}"
-restore_volume="pg18backrest-restore-data-${suffix}"
-mc_volume="pg18backrest-mc-${suffix}"
+network="declarative-postgres-backrest-test-${suffix}"
+backup_minio="declarative-postgres-backrest-backup-minio-${suffix}"
+restore_minio="declarative-postgres-backrest-restore-minio-${suffix}"
+primary="declarative-postgres-backrest-primary-${suffix}"
+restore="declarative-postgres-backrest-restore-${suffix}"
+invalid="declarative-postgres-backrest-invalid-${suffix}"
+primary_volume="declarative-postgres-backrest-primary-data-${suffix}"
+restore_volume="declarative-postgres-backrest-restore-data-${suffix}"
+mc_volume="declarative-postgres-backrest-mc-${suffix}"
 
 cleanup() {
 	docker rm -f "$invalid" "$restore" "$primary" "$backup_minio" "$restore_minio" >/dev/null 2>&1 || true
@@ -64,11 +64,11 @@ invalid_exit_code="$(docker wait "$invalid")"
 test "$invalid_exit_code" -ne 0
 docker logs "$invalid" | grep -q 'cannot manage grants on schema'
 
-docker run -d --name "$backup_minio" --network "$network" --network-alias pg18backrest-backup-minio \
+docker run -d --name "$backup_minio" --network "$network" --network-alias declarative-postgres-backrest-backup-minio \
     -e MINIO_ROOT_USER=integration-key \
     -e MINIO_ROOT_PASSWORD=integration-secret \
     minio/minio:RELEASE.2025-04-22T22-12-26Z server /data >/dev/null
-docker run -d --name "$restore_minio" --network "$network" --network-alias pg18backrest-restore-minio \
+docker run -d --name "$restore_minio" --network "$network" --network-alias declarative-postgres-backrest-restore-minio \
     -e MINIO_ROOT_USER=integration-key \
     -e MINIO_ROOT_PASSWORD=integration-secret \
     minio/minio:RELEASE.2025-04-22T22-12-26Z server /data >/dev/null

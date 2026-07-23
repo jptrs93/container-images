@@ -9,7 +9,7 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jptrs93/container-images/pg18backrest/internal/config"
+	"github.com/jptrs93/container-images/declarative-postgres-backrest/internal/config"
 )
 
 func Reconcile(ctx context.Context, cfg config.Config, initDB *config.InitDBOptions) error {
