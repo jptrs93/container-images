@@ -1,4 +1,4 @@
-FROM golang:1.25.0-bookworm AS supervisor-build
+FROM golang:1.26.5-bookworm AS supervisor-build
 
 WORKDIR /src
 
