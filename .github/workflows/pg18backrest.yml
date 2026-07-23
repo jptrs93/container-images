@@ -23,7 +23,7 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v6.0.2
-      - uses: actions/setup-go@v6.0.0
+      - uses: actions/setup-go@v7.0.0
         with:
           go-version-file: pg18backrest/go.mod
       - name: Test Go packages
