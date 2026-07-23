@@ -1,14 +1,21 @@
 # declarative-postgres-backrest
 
-`ghcr.io/jptrs93/declarative-postgres-backrest` packages PostgreSQL 18.4 and optional [pgBackRest](https://pgbackrest.org/) S3 backups. The sole image tag matches its Git tag, for example `18.4_2.58.0_v1`.
+`ghcr.io/jptrs93/declarative-postgres-backrest` packages PostgreSQL and [pgBackRest](https://pgbackrest.org/) for S3 backups into a self contained image that is configured via a single declaritive yaml file. The configuration file is reconciled against the database on each start up. In addition to standard static postgres configuration, the yaml file lets you declaritively define databases, roles/ users, credentials, permissions, extensions etc..  At any time you can change the config file and the database state will be reconciled to match on next restart. This approach aligns more cleanly with modern deployment orchestration platforms. For example, you can rotate a password or audit what users and credentials exist without executing SQL commands within the instance itself. 
 
-Mount persistent storage at `/var/lib/postgresql` and YAML at `POSTGRES_SUPERVISOR_CONFIG` (default: `/etc/postgres-supervisor/config.yaml`). The image is `linux/amd64` only. [`examples/compose/`](examples/compose/) is a local smoke-test deployment.
+Images are tagged as `<postgres version>_<backrest version>_<this version>`, for example `18.4_2.58.0_v1`.
 
-## Configuration
+## Usage
+
+To run the image you need to:
+
+* Mount persistent storage at the container path `/var/lib/postgresql` (standard for postgres > 18).
+* Mount the declarative YAML configuration file at `/etc/postgres-supervisor/config.yaml`. If you want to change were the config file is loaded from then you can set `POSTGRES_SUPERVISOR_CONFIG`.
 
 YAML is strict: unknown fields fail startup. A string exactly equal to `${ENV_NAME}` is replaced once with the non-empty environment value. Use your orchestrator's secret support for those variables.
 
 If no configuration file is mounted, the normal official `postgres` initialization variables apply. Declaring `initdb` requires `postgres_password`; its password is reconciled on every startup. `postgres_user` and `postgres_db` only affect an empty volume.
+
+## Examples
 
 ### PostgreSQL Only
 
