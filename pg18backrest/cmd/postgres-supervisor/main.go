@@ -80,6 +80,10 @@ func run() error {
 		log.Printf("pgBackRest is disabled because its configuration is invalid: %v", backupErr)
 		_ = status.Write("/var/lib/postgresql/pgbackrest-state", "failed")
 	}
+	_ = status.Write(supervisorStatePath, "starting")
+	if backupEnabled && backupErr == nil {
+		_ = status.Write("/var/lib/postgresql/pgbackrest-state", "starting")
+	}
 	if restore {
 		if manager == nil {
 			return errors.New("cannot restore without valid pgBackRest configuration")
