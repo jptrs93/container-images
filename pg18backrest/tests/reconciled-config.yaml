@@ -5,23 +5,19 @@ hba:
 initdb:
   postgres_user:
     value: integration_admin
-  postgres_password:
-    env_value_key: INTEGRATION_POSTGRES_PASSWORD
+  postgres_password: ${INTEGRATION_POSTGRES_PASSWORD}
   postgres_db:
     value: app
 pgbackrest:
   enabled: true
   stanza: integration
   s3:
-    endpoint: http://pg18backrest-backup-minio:9000
+    host: pg18backrest-backup-minio
+    port: 9000
     bucket: postgres-backups
     verify_tls: false
-    access_key:
-      env_value_key: INTEGRATION_S3_ACCESS_KEY
-      env_file_path_key: INTEGRATION_S3_ACCESS_KEY_FILE
-    secret_key:
-      env_value_key: INTEGRATION_S3_SECRET_KEY
-      env_file_path_key: INTEGRATION_S3_SECRET_KEY_FILE
+    access_key: ${INTEGRATION_S3_ACCESS_KEY}
+    secret_key: ${INTEGRATION_S3_SECRET_KEY}
   schedules:
     full: '59 23 31 12 *'
     differential: '59 23 31 12 *'
@@ -29,16 +25,13 @@ pgbackrest:
 roles:
   - name:
       value: app_owner
-    password:
-      env_value_key: INTEGRATION_OWNER_PASSWORD
+    password: ${INTEGRATION_OWNER_PASSWORD}
   - name:
       value: reader_one
-    password:
-      env_value_key: INTEGRATION_READER_ONE_PASSWORD
+    password: ${INTEGRATION_READER_ONE_PASSWORD}
   - name:
       value: reader_two
-    password:
-      env_value_key: INTEGRATION_READER_TWO_PASSWORD
+    password: ${INTEGRATION_READER_TWO_PASSWORD}
     permissions:
       - database: app
         schema: app
@@ -48,8 +41,7 @@ roles:
           - SELECT
   - name:
       value: app_writer
-    password:
-      env_value_key: INTEGRATION_WRITER_PASSWORD
+    password: ${INTEGRATION_WRITER_PASSWORD}
     permissions:
       - database: app
         schema: app
@@ -61,8 +53,7 @@ roles:
           - UPDATE
   - name:
       value: audit_reader
-    password:
-      env_value_key: INTEGRATION_AUDIT_READER_PASSWORD
+    password: ${INTEGRATION_AUDIT_READER_PASSWORD}
     permissions:
       - database: app
         schema: app

@@ -5,26 +5,20 @@ hba:
 initdb:
   postgres_user:
     env: POSTGRES_USER
-  postgres_password:
-    env_value_key: POSTGRES_PASSWORD
-    env_file_path_key: POSTGRES_PASSWORD_FILE
+  postgres_password: ${POSTGRES_PASSWORD}
   postgres_db:
     env: POSTGRES_DB
 pgbackrest:
   enabled: true
   stanza: app-prod
   s3:
-    endpoint: https://s3.example.internal
+    host: ${S3_HOST}
     bucket: postgres-backups
     region: us-east-1
     uri_style: path
     verify_tls: true
-    access_key:
-      env_value_key: S3_ACCESS_KEY
-      env_file_path_key: S3_ACCESS_KEY_FILE
-    secret_key:
-      env_value_key: S3_SECRET_KEY
-      env_file_path_key: S3_SECRET_KEY_FILE
+    access_key: ${S3_ACCESS_KEY}
+    secret_key: ${S3_SECRET_KEY}
   retention:
     full: 2
     archive: 2
@@ -41,9 +35,7 @@ pgbackrest:
 roles:
   - name:
       value: app_user
-    password:
-      env_value_key: APP_DATABASE_PASSWORD
-      env_file_path_key: APP_DATABASE_PASSWORD_FILE
+    password: ${APP_DATABASE_PASSWORD}
     permissions:
       - database: radkit
         grants:

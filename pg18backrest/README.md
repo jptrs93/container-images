@@ -12,7 +12,7 @@ The image is independent of the runtime orchestrator. Supply these three things 
 
 - Persistent storage mounted at `/var/lib/postgresql`, not the pre-PostgreSQL-18 `/var/lib/postgresql/data` path. PostgreSQL data is stored at `/var/lib/postgresql/18/docker`; pgBackRest's async spool and health state share the same persistent volume.
 - Strict YAML mounted at `POSTGRES_SUPERVISOR_CONFIG`, defaulting to `/etc/postgres-supervisor/config.yaml`. [`config.example.yaml`](config.example.yaml) is the complete schema example.
-- Environment variables or mounted secret files selected by the YAML's `env`, `env_value_key`, and `env_file_path_key` fields. Use your platform's secret facility rather than plaintext environment files for production credentials.
+- Environment variables referenced by secret values in YAML. Use your platform's secret facility rather than plaintext environment files for production credentials.
 
 [`examples/compose/`](examples/compose/) contains a Docker Compose smoke-test deployment. It is an example only, not a required deployment model.
 
@@ -25,7 +25,7 @@ The S3 bucket must already exist. The stanza separates clusters within the bucke
 
 ## Supervisor Configuration
 
-The supervisor reads strict YAML from `POSTGRES_SUPERVISOR_CONFIG`, defaulting to `/etc/postgres-supervisor/config.yaml`. Unknown YAML fields are rejected. The file is read at container start; restart the container after changing `initdb`, `settings`, `hba`, or `pgbackrest`.
+The supervisor reads strict YAML from `POSTGRES_SUPERVISOR_CONFIG`, defaulting to `/etc/postgres-supervisor/config.yaml`. Unknown YAML fields are rejected. Any string value exactly matching `${ENV_NAME}` is replaced once with that environment value before the YAML is decoded; the resulting value is not expanded again. The file is read at container start; restart the container after changing `initdb`, `settings`, `hba`, or `pgbackrest`.
 
 ```yaml
 settings:
@@ -36,16 +36,14 @@ hba:
 initdb:
   postgres_user:
     env: POSTGRES_USER
-  postgres_password:
-    env_file_path_key: POSTGRES_PASSWORD_FILE
+  postgres_password: ${POSTGRES_PASSWORD}
   postgres_db:
     env: POSTGRES_DB
 roles:
   - name:
       value: app_user
       # env: APP_USER
-    password:
-      env_file_path_key: APP_DATABASE_PASSWORD_FILE
+    password: ${APP_DATABASE_PASSWORD}
     permissions:
       - database: radkit
         # schema: public # all non-system schemas when omitted
@@ -72,9 +70,9 @@ databases:
 
 `initdb` is optional. When declared, its resolved values are passed to the official entrypoint for an empty `PGDATA`. `postgres_user` defaults to `POSTGRES_USER`, then `postgres`; `postgres_db` defaults to `POSTGRES_DB`, then the resolved `postgres_user`. Those two fields are bootstrap-only and are not changed after initialization.
 
-`initdb.postgres_password` defaults to exactly one of `POSTGRES_PASSWORD` and `POSTGRES_PASSWORD_FILE`. Its password is applied to the resolved bootstrap superuser after every successful PostgreSQL startup, so changing the referenced secret rotates that password on restart. The username is deliberately not renamed or reconciled.
+`initdb.postgres_password` is required when `initdb` is declared. Its password is applied to the resolved bootstrap superuser after every successful PostgreSQL startup, so changing the referenced secret rotates that password on restart. The username is deliberately not renamed or reconciled.
 
-Roles may declare `password` with the same secret-source format. A declared password is applied on every reconciliation; omitting it leaves an existing role password unchanged. Roles, databases, schemas, and extensions remain additive and are never removed automatically. Schema and table grants for configured roles are reconciled to match the YAML configuration.
+Roles may declare `password` with the same scalar secret format. A declared password is applied on every reconciliation; omitting it leaves an existing role password unchanged. Roles, databases, schemas, and extensions remain additive and are never removed automatically. Schema and table grants for configured roles are reconciled to match the YAML configuration.
 
 `pgbackrest` is the source of truth for backup behavior, repository settings, retention, schedules, and the scheduler time zone. See [`config.example.yaml`](config.example.yaml) for a complete example. The section is optional; set `enabled: true` to enable WAL archiving and scheduled backups.
 
@@ -84,15 +82,16 @@ PostgreSQL logging is fixed to `stderr` with its logging collector disabled. The
 
 Each `roles[].name` has exactly one of `value` or `env`. New roles are created with `LOGIN`; declared role passwords are reconciled, but other existing role attributes are not altered. `grants` permits `CREATE` and `USAGE` on a schema. `table_grants` permits `SELECT`, `INSERT`, `UPDATE`, and `DELETE` on existing tables and tables subsequently created by the schema owner. A missing `schema` applies the grant to all current non-system schemas in the specified database.
 
-The reconciler runs with `github.com/jackc/pgx/v5` after PostgreSQL is ready. It creates missing roles, databases, schemas, extensions, and explicit grants, and updates only declared role passwords. It does not delete or alter databases, schemas, roles, extensions, or grants that were removed from YAML. The default local reconciliation user is `initdb.postgres_user`, then `POSTGRES_USER`, then `postgres`; set `POSTGRES_SUPERVISOR_ADMIN_USER` or `POSTGRES_SUPERVISOR_ADMIN_URL` when needed.
+The reconciler runs with `github.com/jackc/pgx/v5` after PostgreSQL is ready. It creates missing roles, databases, schemas, and extensions; reconciles schema and table grants; and updates only declared role passwords. It does not delete or alter databases, schemas, roles, or extensions removed from YAML. The default local reconciliation user is `initdb.postgres_user`, then `POSTGRES_USER`, then `postgres`; set `POSTGRES_SUPERVISOR_ADMIN_USER` or `POSTGRES_SUPERVISOR_ADMIN_URL` when needed.
 
 ## pgBackRest Configuration
 
-When `pgbackrest.enabled` is true, `stanza`, `s3.endpoint`, and `s3.bucket` are required. All other non-secret settings are optional.
+When `pgbackrest.enabled` is true, `stanza`, `s3.host`, and `s3.bucket` are required. All other settings are optional.
 
 | YAML path | Default | Description |
 | --- | --- | --- |
 | `s3.region` | `us-east-1` | S3 signing region. |
+| `s3.port` | `443` | S3 service port. Set this to `9000` for a typical MinIO deployment. |
 | `s3.uri_style` | `path` | `path` or `host` addressing. |
 | `s3.verify_tls` | `true` | Set `false` only for a trusted self-signed endpoint. |
 | `retention.full` | `2` | Completed full backup sets retained. pgBackRest needs space for retention plus one additional full backup before expiry. |
@@ -108,11 +107,11 @@ When `pgbackrest.enabled` is true, `stanza`, `s3.endpoint`, and `s3.bucket` are 
 
 The Go scheduler accepts standard five-field cron syntax with ranges, steps, lists, and wildcards. All backup commands run as the `postgres` operating-system user.
 
-### Secret Sources
+### Values
 
-`initdb.postgres_password`, `roles[].password`, `s3.access_key`, `s3.secret_key`, and optional `repository_cipher_pass` define secret sources rather than secret values. `env_value_key` names an environment variable containing the secret. `env_file_path_key` names an environment variable containing the path to a secret file, suitable for mounted secret projections. Exactly one source must be set for each required secret; empty values and empty files are rejected.
+Every YAML string value supports a literal or an exact `${ENV_NAME}` reference. This includes passwords, S3 host/port, PostgreSQL settings, HBA records, names, backup schedules, and all other string fields. Referenced environment variables cannot be empty. File-based secret sources are not supported.
 
-When an entire pgBackRest source declaration is omitted, it defaults to `PGBACKREST_S3_KEY`/`PGBACKREST_S3_KEY_FILE`, `PGBACKREST_S3_KEY_SECRET`/`PGBACKREST_S3_KEY_SECRET_FILE`, or `PGBACKREST_REPO_CIPHER_PASS`/`PGBACKREST_REPO_CIPHER_PASS_FILE`. A partially declared source uses only the listed keys. The example deliberately uses generic `S3_ACCESS_KEY` and `S3_SECRET_KEY` names instead. The supervisor removes configured secret variables from the PostgreSQL child environment, except for the resolved bootstrap values required by the official entrypoint.
+The supervisor removes referenced secret variables from the PostgreSQL child environment, except for the resolved bootstrap values required by the official entrypoint.
 
 ## Startup And Health
 

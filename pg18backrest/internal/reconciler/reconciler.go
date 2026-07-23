@@ -29,7 +29,7 @@ func Reconcile(ctx context.Context, cfg config.Config, initDB *config.InitDBOpti
 		if err != nil {
 			return err
 		}
-		password, err := role.Password.Resolve(fmt.Sprintf("roles[%d].password", index), "", "", role.Password.Configured())
+		password, err := role.Password.Resolve(fmt.Sprintf("roles[%d].password", index), role.Password.Configured())
 		if err != nil {
 			return err
 		}

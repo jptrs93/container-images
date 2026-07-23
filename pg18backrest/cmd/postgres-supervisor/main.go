@@ -270,23 +270,11 @@ func supervisorAdminUser(initDB *config.InitDBOptions) string {
 
 func postgresEnv(cfg config.Config, initDB *config.InitDBOptions) []string {
 	excluded := map[string]struct{}{}
-	if cfg.PGBackRest != nil {
-		for _, source := range []config.SecretSource{
-			cfg.PGBackRest.S3.AccessKey,
-			cfg.PGBackRest.S3.SecretKey,
-			cfg.PGBackRest.RepositoryCipherPass,
-		} {
-			excludeSecretSource(excluded, source)
-		}
-	}
-	for _, role := range cfg.Roles {
-		excludeSecretSource(excluded, role.Password)
-	}
-	if cfg.InitDB != nil {
-		excludeSecretSource(excluded, cfg.InitDB.PostgresPassword)
+	for _, name := range cfg.EnvironmentReferences() {
+		excluded[name] = struct{}{}
 	}
 	if initDB != nil {
-		for _, name := range []string{"POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_PASSWORD_FILE", "POSTGRES_DB"} {
+		for _, name := range []string{"POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DB"} {
 			excluded[name] = struct{}{}
 		}
 	}
@@ -307,15 +295,6 @@ func postgresEnv(cfg config.Config, initDB *config.InitDBOptions) []string {
 		)
 	}
 	return values
-}
-
-func excludeSecretSource(excluded map[string]struct{}, source config.SecretSource) {
-	if source.EnvValueKey != "" {
-		excluded[source.EnvValueKey] = struct{}{}
-	}
-	if source.EnvFilePathKey != "" {
-		excluded[source.EnvFilePathKey] = struct{}{}
-	}
 }
 
 func sleep(ctx context.Context, duration time.Duration) bool {

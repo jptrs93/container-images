@@ -1,20 +1,24 @@
 package config
 
 import (
+	"bytes"
 	"fmt"
 	"os"
-	"strings"
+	"regexp"
+	"sort"
+	"strconv"
 
 	"gopkg.in/yaml.v3"
 )
 
 type Config struct {
-	InitDB     *InitDB        `yaml:"initdb"`
-	Settings   map[string]any `yaml:"settings"`
-	HBA        []string       `yaml:"hba"`
-	Roles      []Role         `yaml:"roles"`
-	Databases  []Database     `yaml:"databases"`
-	PGBackRest *PGBackRest    `yaml:"pgbackrest"`
+	InitDB                *InitDB        `yaml:"initdb"`
+	Settings              map[string]any `yaml:"settings"`
+	HBA                   []string       `yaml:"hba"`
+	Roles                 []Role         `yaml:"roles"`
+	Databases             []Database     `yaml:"databases"`
+	PGBackRest            *PGBackRest    `yaml:"pgbackrest"`
+	environmentReferences []string
 }
 
 type ValueSource struct {
@@ -24,7 +28,7 @@ type ValueSource struct {
 
 type Role struct {
 	Name        ValueSource  `yaml:"name"`
-	Password    SecretSource `yaml:"password"`
+	Password    SecretValue  `yaml:"password"`
 	Permissions []Permission `yaml:"permissions"`
 }
 
@@ -43,9 +47,9 @@ type Database struct {
 }
 
 type InitDB struct {
-	PostgresUser     ValueSource  `yaml:"postgres_user"`
-	PostgresPassword SecretSource `yaml:"postgres_password"`
-	PostgresDB       ValueSource  `yaml:"postgres_db"`
+	PostgresUser     ValueSource `yaml:"postgres_user"`
+	PostgresPassword SecretValue `yaml:"postgres_password"`
+	PostgresDB       ValueSource `yaml:"postgres_db"`
 }
 
 type InitDBOptions struct {
@@ -64,17 +68,18 @@ type PGBackRest struct {
 	ProcessMax           int             `yaml:"process_max"`
 	InitialBackup        *bool           `yaml:"initial_backup"`
 	Timezone             string          `yaml:"timezone"`
-	RepositoryCipherPass SecretSource    `yaml:"repository_cipher_pass"`
+	RepositoryCipherPass SecretValue     `yaml:"repository_cipher_pass"`
 }
 
 type S3 struct {
-	Endpoint  string       `yaml:"endpoint"`
-	Bucket    string       `yaml:"bucket"`
-	Region    string       `yaml:"region"`
-	URIStyle  string       `yaml:"uri_style"`
-	VerifyTLS *bool        `yaml:"verify_tls"`
-	AccessKey SecretSource `yaml:"access_key"`
-	SecretKey SecretSource `yaml:"secret_key"`
+	Host      string      `yaml:"host"`
+	Port      string      `yaml:"port"`
+	Bucket    string      `yaml:"bucket"`
+	Region    string      `yaml:"region"`
+	URIStyle  string      `yaml:"uri_style"`
+	VerifyTLS *bool       `yaml:"verify_tls"`
+	AccessKey SecretValue `yaml:"access_key"`
+	SecretKey SecretValue `yaml:"secret_key"`
 }
 
 type Retention struct {
@@ -93,14 +98,12 @@ type Archive struct {
 	TimeoutSeconds int    `yaml:"timeout_seconds"`
 }
 
-type SecretSource struct {
-	EnvValueKey    string `yaml:"env_value_key"`
-	EnvFilePathKey string `yaml:"env_file_path_key"`
-}
+type SecretValue string
 
 type PGBackRestOptions struct {
 	Stanza                string
-	S3Endpoint            string
+	S3Host                string
+	S3Port                int
 	S3Bucket              string
 	S3Region              string
 	S3URIStyle            string
@@ -129,13 +132,34 @@ func Load(path string) (Config, error) {
 		return Config{}, fmt.Errorf("read config: %w", err)
 	}
 
+	var document yaml.Node
+	if err := yaml.Unmarshal(contents, &document); err != nil {
+		return Config{}, fmt.Errorf("parse config: %w", err)
+	}
+	references := make(map[string]struct{})
+	if err := resolveEnvironmentReferences(&document, references); err != nil {
+		return Config{}, fmt.Errorf("resolve config values: %w", err)
+	}
+	resolved, err := yaml.Marshal(&document)
+	if err != nil {
+		return Config{}, fmt.Errorf("encode resolved config: %w", err)
+	}
+
 	var cfg Config
-	decoder := yaml.NewDecoder(strings.NewReader(string(contents)))
+	decoder := yaml.NewDecoder(bytes.NewReader(resolved))
 	decoder.KnownFields(true)
 	if err := decoder.Decode(&cfg); err != nil {
 		return Config{}, fmt.Errorf("parse config: %w", err)
 	}
+	for name := range references {
+		cfg.environmentReferences = append(cfg.environmentReferences, name)
+	}
+	sort.Strings(cfg.environmentReferences)
 	return cfg, nil
+}
+
+func (cfg Config) EnvironmentReferences() []string {
+	return cfg.environmentReferences
 }
 
 func (cfg Config) Validate() error {
@@ -218,7 +242,7 @@ func (initDB InitDB) Resolve() (InitDBOptions, error) {
 	if err != nil {
 		return InitDBOptions{}, err
 	}
-	password, err := initDB.PostgresPassword.Resolve("initdb.postgres_password", "POSTGRES_PASSWORD", "POSTGRES_PASSWORD_FILE", true)
+	password, err := initDB.PostgresPassword.Resolve("initdb.postgres_password", true)
 	if err != nil {
 		return InitDBOptions{}, err
 	}
@@ -241,24 +265,31 @@ func (pgBackRest PGBackRest) Resolve() (PGBackRestOptions, error) {
 	if pgBackRest.Stanza == "" {
 		return PGBackRestOptions{}, fmt.Errorf("pgbackrest.stanza must be set")
 	}
-	if pgBackRest.S3.Endpoint == "" {
-		return PGBackRestOptions{}, fmt.Errorf("pgbackrest.s3.endpoint must be set")
+	if pgBackRest.S3.Host == "" {
+		return PGBackRestOptions{}, fmt.Errorf("pgbackrest.s3.host must be set")
 	}
 	if pgBackRest.S3.Bucket == "" {
 		return PGBackRestOptions{}, fmt.Errorf("pgbackrest.s3.bucket must be set")
 	}
 
-	accessKey, err := pgBackRest.S3.AccessKey.Resolve("pgbackrest.s3.access_key", "PGBACKREST_S3_KEY", "PGBACKREST_S3_KEY_FILE", true)
+	accessKey, err := pgBackRest.S3.AccessKey.Resolve("pgbackrest.s3.access_key", true)
 	if err != nil {
 		return PGBackRestOptions{}, err
 	}
-	secretKey, err := pgBackRest.S3.SecretKey.Resolve("pgbackrest.s3.secret_key", "PGBACKREST_S3_KEY_SECRET", "PGBACKREST_S3_KEY_SECRET_FILE", true)
+	secretKey, err := pgBackRest.S3.SecretKey.Resolve("pgbackrest.s3.secret_key", true)
 	if err != nil {
 		return PGBackRestOptions{}, err
 	}
-	cipherPass, err := pgBackRest.RepositoryCipherPass.Resolve("pgbackrest.repository_cipher_pass", "PGBACKREST_REPO_CIPHER_PASS", "PGBACKREST_REPO_CIPHER_PASS_FILE", pgBackRest.RepositoryCipherPass.Configured())
+	cipherPass, err := pgBackRest.RepositoryCipherPass.Resolve("pgbackrest.repository_cipher_pass", pgBackRest.RepositoryCipherPass.Configured())
 	if err != nil {
 		return PGBackRestOptions{}, err
+	}
+	port := 443
+	if pgBackRest.S3.Port != "" {
+		port, err = strconv.Atoi(pgBackRest.S3.Port)
+		if err != nil || port < 1 || port > 65535 {
+			return PGBackRestOptions{}, fmt.Errorf("pgbackrest.s3.port must be an integer between 1 and 65535")
+		}
 	}
 
 	uriStyle := defaultString(pgBackRest.S3.URIStyle, "path")
@@ -277,7 +308,8 @@ func (pgBackRest PGBackRest) Resolve() (PGBackRestOptions, error) {
 
 	return PGBackRestOptions{
 		Stanza:                pgBackRest.Stanza,
-		S3Endpoint:            pgBackRest.S3.Endpoint,
+		S3Host:                pgBackRest.S3.Host,
+		S3Port:                port,
 		S3Bucket:              pgBackRest.S3.Bucket,
 		S3Region:              defaultString(pgBackRest.S3.Region, "us-east-1"),
 		S3URIStyle:            uriStyle,
@@ -298,59 +330,52 @@ func (pgBackRest PGBackRest) Resolve() (PGBackRestOptions, error) {
 	}, nil
 }
 
-func (source SecretSource) Resolve(field, defaultValueKey, defaultFilePathKey string, required bool) (string, error) {
-	valueKey := source.EnvValueKey
-	filePathKey := source.EnvFilePathKey
-	if valueKey == "" && filePathKey == "" {
-		valueKey = defaultValueKey
-		filePathKey = defaultFilePathKey
-	}
-	value, hasValue := "", false
-	if valueKey != "" {
-		value, hasValue = os.LookupEnv(valueKey)
-	}
-	filePath, hasFilePath := "", false
-	if filePathKey != "" {
-		filePath, hasFilePath = os.LookupEnv(filePathKey)
-	}
-	if hasValue && hasFilePath {
-		return "", fmt.Errorf("%s must set exactly one of %s and %s", field, valueKey, filePathKey)
-	}
-	if hasValue {
-		if value == "" {
-			return "", fmt.Errorf("%s environment variable %s is empty", field, valueKey)
+func (value SecretValue) Resolve(field string, required bool) (string, error) {
+	if value == "" {
+		if required {
+			return "", fmt.Errorf("%s is required", field)
 		}
-		return value, nil
+		return "", nil
 	}
-	if hasFilePath {
-		if filePath == "" {
-			return "", fmt.Errorf("%s environment variable %s is empty", field, filePathKey)
-		}
-		contents, err := os.ReadFile(filePath)
-		if err != nil {
-			return "", fmt.Errorf("read %s from %s: %w", field, filePathKey, err)
-		}
-		secret := strings.TrimSuffix(string(contents), "\n")
-		if secret == "" {
-			return "", fmt.Errorf("%s file %s is empty", field, filePath)
-		}
-		return secret, nil
-	}
-	if required {
-		keys := make([]string, 0, 2)
-		if valueKey != "" {
-			keys = append(keys, valueKey)
-		}
-		if filePathKey != "" {
-			keys = append(keys, filePathKey)
-		}
-		return "", fmt.Errorf("%s must set one of %s", field, strings.Join(keys, " and "))
-	}
-	return "", nil
+	return string(value), nil
 }
 
-func (source SecretSource) Configured() bool {
-	return source.EnvValueKey != "" || source.EnvFilePathKey != ""
+func (value SecretValue) Configured() bool {
+	return value != ""
+}
+
+var environmentReference = regexp.MustCompile(`^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$`)
+
+func resolveEnvironmentReferences(node *yaml.Node, references map[string]struct{}) error {
+	switch node.Kind {
+	case yaml.DocumentNode, yaml.SequenceNode:
+		for _, child := range node.Content {
+			if err := resolveEnvironmentReferences(child, references); err != nil {
+				return err
+			}
+		}
+	case yaml.MappingNode:
+		for index := 1; index < len(node.Content); index += 2 {
+			if err := resolveEnvironmentReferences(node.Content[index], references); err != nil {
+				return err
+			}
+		}
+	case yaml.ScalarNode:
+		if node.Tag != "!!str" {
+			return nil
+		}
+		matches := environmentReference.FindStringSubmatch(node.Value)
+		if len(matches) == 0 {
+			return nil
+		}
+		value, ok := os.LookupEnv(matches[1])
+		if !ok || value == "" {
+			return fmt.Errorf("environment variable %s is empty", matches[1])
+		}
+		node.Value = value
+		references[matches[1]] = struct{}{}
+	}
+	return nil
 }
 
 func defaultString(value, fallback string) string {

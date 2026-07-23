@@ -7,67 +7,77 @@ import (
 )
 
 func TestPGBackRestResolveUsesConfiguredSecretKeys(t *testing.T) {
-	t.Setenv("TEST_S3_ACCESS_KEY", "access-key")
-	t.Setenv("TEST_S3_SECRET_KEY", "secret-key")
-	t.Setenv("PGBACKREST_S3_KEY_FILE", "/not-used-by-custom-source")
 	options, err := PGBackRest{
 		Stanza: "app-prod",
 		S3: S3{
-			Endpoint: "https://s3.example.internal",
-			Bucket:   "postgres-backups",
-			AccessKey: SecretSource{
-				EnvValueKey: "TEST_S3_ACCESS_KEY",
-			},
-			SecretKey: SecretSource{
-				EnvValueKey: "TEST_S3_SECRET_KEY",
-			},
+			Host:      "s3.example.internal",
+			Bucket:    "postgres-backups",
+			AccessKey: "access-key",
+			SecretKey: "secret-key",
 		},
 	}.Resolve()
 	if err != nil {
 		t.Fatalf("Resolve() error = %v", err)
 	}
-	if options.S3AccessKey != "access-key" || options.S3SecretKey != "secret-key" {
-		t.Fatalf("resolved credentials = %q, %q", options.S3AccessKey, options.S3SecretKey)
+	if options.S3AccessKey != "access-key" || options.S3SecretKey != "secret-key" || options.S3Port != 443 {
+		t.Fatalf("resolved credentials and port = %q, %q, %d", options.S3AccessKey, options.S3SecretKey, options.S3Port)
 	}
 	if options.DiffSchedule != "0 2 * * 1-6" || options.Timezone != "UTC" {
 		t.Fatalf("defaults = schedule %q, timezone %q", options.DiffSchedule, options.Timezone)
 	}
 }
 
-func TestSecretSourceRejectsValueAndFilePath(t *testing.T) {
-	t.Setenv("TEST_VALUE", "value")
-	t.Setenv("TEST_FILE", "/tmp/secret")
-	_, err := SecretSource{
-		EnvValueKey:    "TEST_VALUE",
-		EnvFilePathKey: "TEST_FILE",
-	}.Resolve("test.secret", "DEFAULT_VALUE", "DEFAULT_FILE", true)
-	if err == nil || !strings.Contains(err.Error(), "exactly one") {
-		t.Fatalf("Resolve() error = %v, want exactly-one-source error", err)
-	}
-}
-
-func TestSecretSourceReadsConfiguredFilePath(t *testing.T) {
-	path := t.TempDir() + "/secret"
-	if err := os.WriteFile(path, []byte("secret-from-file\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("TEST_SECRET_FILE", path)
-	value, err := SecretSource{EnvFilePathKey: "TEST_SECRET_FILE"}.Resolve("test.secret", "DEFAULT_VALUE", "DEFAULT_FILE", true)
+func TestSecretValueResolvesLiteral(t *testing.T) {
+	value, err := SecretValue("literal-value").Resolve("test.secret", true)
 	if err != nil {
 		t.Fatalf("Resolve() error = %v", err)
 	}
-	if value != "secret-from-file" {
+	if value != "literal-value" {
 		t.Fatalf("Resolve() value = %q", value)
 	}
 }
 
+func TestLoadResolvesStringEnvironmentReferencesOnce(t *testing.T) {
+	t.Setenv("TEST_PASSWORD", "password-from-environment")
+	t.Setenv("TEST_HBA", "host all all 10.0.0.0/8 scram-sha-256")
+	t.Setenv("TEST_ROLE", "app_user")
+	t.Setenv("TEST_HOST", "s3.example.internal")
+	t.Setenv("TEST_PORT", "8443")
+	t.Setenv("TEST_NESTED", "${TEST_PASSWORD}")
+	path := t.TempDir() + "/config.yaml"
+	contents := "initdb:\n  postgres_password: ${TEST_PASSWORD}\nhba:\n  - ${TEST_HBA}\nroles:\n  - name:\n      value: ${TEST_ROLE}\npgbackrest:\n  enabled: true\n  stanza: app\n  s3:\n    host: ${TEST_HOST}\n    port: ${TEST_PORT}\n    bucket: backups\n    access_key: key\n    secret_key: secret\nsettings:\n  application_name: ${TEST_NESTED}\n"
+	if err := os.WriteFile(path, []byte(contents), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.InitDB.PostgresPassword != "password-from-environment" || cfg.HBA[0] != "host all all 10.0.0.0/8 scram-sha-256" || cfg.Roles[0].Name.Value != "app_user" || cfg.PGBackRest.S3.Host != "s3.example.internal" || cfg.PGBackRest.S3.Port != "8443" {
+		t.Fatalf("resolved config = %#v", cfg)
+	}
+	if cfg.Settings["application_name"] != "${TEST_PASSWORD}" {
+		t.Fatalf("application_name = %q, want unexpanded environment value", cfg.Settings["application_name"])
+	}
+	if strings.Join(cfg.EnvironmentReferences(), ",") != "TEST_HBA,TEST_HOST,TEST_NESTED,TEST_PASSWORD,TEST_PORT,TEST_ROLE" {
+		t.Fatalf("environment references = %q", cfg.EnvironmentReferences())
+	}
+}
+
+func TestLoadRejectsSecretSourceObject(t *testing.T) {
+	path := t.TempDir() + "/config.yaml"
+	if err := os.WriteFile(path, []byte("initdb:\n  postgres_password:\n    env_file_path_key: POSTGRES_PASSWORD_FILE\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load() error = nil, want scalar secret error")
+	}
+}
+
 func TestInitDBResolveUsesBootstrapUserAsDatabaseDefault(t *testing.T) {
-	t.Setenv("TEST_POSTGRES_PASSWORD", "postgres-password")
 	options, err := InitDB{
-		PostgresUser: ValueSource{Value: "bootstrap_admin"},
-		PostgresPassword: SecretSource{
-			EnvValueKey: "TEST_POSTGRES_PASSWORD",
-		},
+		PostgresUser:     ValueSource{Value: "bootstrap_admin"},
+		PostgresPassword: "postgres-password",
 	}.Resolve()
 	if err != nil {
 		t.Fatalf("Resolve() error = %v", err)
@@ -80,10 +90,9 @@ func TestInitDBResolveUsesBootstrapUserAsDatabaseDefault(t *testing.T) {
 func TestInitDBResolveUsesOfficialUserAndDatabaseDefaults(t *testing.T) {
 	t.Setenv("POSTGRES_USER", "")
 	t.Setenv("POSTGRES_DB", "")
-	t.Setenv("POSTGRES_PASSWORD", "postgres-password")
 	options, err := InitDB{
 		PostgresUser:     ValueSource{Env: "POSTGRES_USER"},
-		PostgresPassword: SecretSource{EnvValueKey: "POSTGRES_PASSWORD"},
+		PostgresPassword: "postgres-password",
 		PostgresDB:       ValueSource{Env: "POSTGRES_DB"},
 	}.Resolve()
 	if err != nil {

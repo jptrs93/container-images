@@ -52,14 +52,17 @@ func New(pgData, postgresUser string, options config.PGBackRestOptions) (*Manage
 	}
 
 	verify := "n"
+	endpoint := "http://" + options.S3Host
 	if options.S3VerifyTLS {
 		verify = "y"
+		endpoint = "https://" + options.S3Host
 	}
 	lines := []string{
 		"[global]",
 		"repo1-type=s3",
 		"repo1-path=/",
-		"repo1-s3-endpoint=" + options.S3Endpoint,
+		"repo1-s3-endpoint=" + endpoint,
+		"repo1-s3-port=" + strconv.Itoa(options.S3Port),
 		"repo1-s3-bucket=" + options.S3Bucket,
 		"repo1-s3-region=" + options.S3Region,
 		"repo1-s3-key=" + options.S3AccessKey,

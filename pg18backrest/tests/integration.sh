@@ -96,7 +96,10 @@ docker run -d --name "$primary" --network "$network" --volume "$primary_volume":
     --volume "$config_file":/etc/postgres-supervisor/config.yaml:ro \
     "${backup_env[@]}" "$image" >/dev/null
 
-wait_for primary-ready docker exec "$primary" pg_isready -q -U integration_admin -d app
+if ! wait_for primary-ready docker exec "$primary" pg_isready -q -U integration_admin -d app; then
+    docker logs "$primary"
+    exit 1
+fi
 if ! wait_for supervisor-ready docker exec "$primary" postgres-supervisor healthcheck; then
     docker logs "$primary"
     exit 1
@@ -128,7 +131,10 @@ rotated_backup_env=(
 docker run -d --name "$primary" --network "$network" --volume "$primary_volume":/var/lib/postgresql \
     --volume "$reconciled_config_file":/etc/postgres-supervisor/config.yaml:ro \
     "${rotated_backup_env[@]}" "$image" >/dev/null
-wait_for primary-ready-after-rotation docker exec "$primary" pg_isready -q -U integration_admin -d app
+if ! wait_for primary-ready-after-rotation docker exec "$primary" pg_isready -q -U integration_admin -d app; then
+    docker logs "$primary"
+    exit 1
+fi
 if ! wait_for supervisor-ready-after-rotation docker exec "$primary" postgres-supervisor healthcheck; then
     docker logs "$primary"
     exit 1
