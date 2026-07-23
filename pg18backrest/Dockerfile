@@ -11,9 +11,11 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags='-s -w' -o /postgres-su
 
 FROM postgres:18.4-bookworm
 
+ARG PGBACKREST_PACKAGE_VERSION=2.58.0-1.pgdg12+1
+
 RUN set -eux; \
     apt-get update; \
-    apt-get install -y --no-install-recommends pgbackrest; \
+    apt-get install -y --no-install-recommends pgbackrest=${PGBACKREST_PACKAGE_VERSION}; \
     rm -rf /var/lib/apt/lists/*; \
     localedef -i en_GB -c -f UTF-8 en_GB.UTF-8
 

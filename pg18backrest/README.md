@@ -2,6 +2,8 @@
 
 `ghcr.io/jptrs93/pg18backrest` is PostgreSQL 18.4 on Debian Bookworm with optional [pgBackRest](https://pgbackrest.org/) backups to one S3-compatible object store. A small Go supervisor is PID 1: it owns PostgreSQL startup, PostgreSQL reconciliation, backup scheduling, and health reporting.
 
+The current content tag is `pg18.4_backrest2.58.0-v1`; release tags, PostgreSQL version tags, and Git SHA tags are published alongside it.
+
 It preserves the normal `postgres` image initialization interface. When `pgbackrest` is omitted from `config.yaml` or has `enabled: false`, it behaves as PostgreSQL without backup configuration.
 
 ## Configure
