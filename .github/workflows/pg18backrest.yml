@@ -41,7 +41,7 @@ jobs:
       - name: Run integration test
         run: pg18backrest/tests/integration.sh pg18backrest:test
       - name: Scan image
-        uses: aquasecurity/trivy-action@0.33.1
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: pg18backrest:test
           format: table
