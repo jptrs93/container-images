@@ -2,9 +2,48 @@ settings:
   max_connections: 100
 hba:
   - host all all 10.0.0.0/8 scram-sha-256
+initdb:
+  postgres_user:
+    env: POSTGRES_USER
+  postgres_password:
+    env_value_key: POSTGRES_PASSWORD
+    env_file_path_key: POSTGRES_PASSWORD_FILE
+  postgres_db:
+    env: POSTGRES_DB
+pgbackrest:
+  enabled: true
+  stanza: app-prod
+  s3:
+    endpoint: https://s3.example.internal
+    bucket: postgres-backups
+    region: us-east-1
+    uri_style: path
+    verify_tls: true
+    access_key:
+      env_value_key: S3_ACCESS_KEY
+      env_file_path_key: S3_ACCESS_KEY_FILE
+    secret_key:
+      env_value_key: S3_SECRET_KEY
+      env_file_path_key: S3_SECRET_KEY_FILE
+  retention:
+    full: 2
+    archive: 2
+  schedules:
+    full: '0 2 * * 0'
+    differential: '0 2 * * 1-6'
+    check: '*/5 * * * *'
+  archive:
+    push_queue_max: 1GiB
+    timeout_seconds: 60
+  process_max: 4
+  initial_backup: true
+  timezone: UTC
 roles:
   - name:
       value: app_user
+    password:
+      env_value_key: APP_DATABASE_PASSWORD
+      env_file_path_key: APP_DATABASE_PASSWORD_FILE
     permissions:
       - database: radkit
         grants:

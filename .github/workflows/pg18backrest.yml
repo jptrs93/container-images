@@ -1,17 +1,9 @@
 name: Build pg18backrest
 
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - 'pg18backrest/**'
-      - '.github/workflows/pg18backrest.yml'
   push:
-    branches: [main]
-    paths:
-      - 'pg18backrest/**'
-      - '.github/workflows/pg18backrest.yml'
-  workflow_dispatch:
+    tags:
+      - 'v*'
 
 env:
   IMAGE_NAME: ghcr.io/jptrs93/pg18backrest
@@ -36,7 +28,6 @@ jobs:
 
   publish:
     needs: test
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -54,6 +45,7 @@ jobs:
             -t $IMAGE_NAME:latest \
             -t $IMAGE_NAME:18 \
             -t $IMAGE_NAME:18.4 \
+            -t $IMAGE_NAME:$GITHUB_REF_NAME \
             -t $IMAGE_NAME:sha-$GITHUB_SHA \
             .
       - name: Publish image
@@ -61,4 +53,5 @@ jobs:
           docker push $IMAGE_NAME:latest
           docker push $IMAGE_NAME:18
           docker push $IMAGE_NAME:18.4
+          docker push $IMAGE_NAME:$GITHUB_REF_NAME
           docker push $IMAGE_NAME:sha-$GITHUB_SHA

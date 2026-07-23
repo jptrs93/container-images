@@ -2,19 +2,19 @@
 
 `ghcr.io/jptrs93/pg18backrest` is PostgreSQL 18.4 on Debian Bookworm with optional [pgBackRest](https://pgbackrest.org/) backups to one S3-compatible object store. A small Go supervisor is PID 1: it owns PostgreSQL startup, PostgreSQL reconciliation, backup scheduling, and health reporting.
 
-It preserves the normal `postgres` image initialization interface. When `PGBACKREST_ENABLED=false` (the default), it behaves as PostgreSQL without backup configuration.
+It preserves the normal `postgres` image initialization interface. When `pgbackrest` is omitted from `config.yaml` or has `enabled: false`, it behaves as PostgreSQL without backup configuration.
 
-## Run
+## Configure
 
-Copy [`.env.example`](.env.example) to `.env`, copy [`config.example.yaml`](config.example.yaml) to `config.yaml`, set real credentials and desired PostgreSQL state, then start the supplied Compose file:
+The image is independent of the runtime orchestrator. Supply these three things using your platform's container, storage, configuration, and secret mechanisms:
 
-```bash
-docker compose --env-file .env -f compose.example.yaml up -d
-```
+- Persistent storage mounted at `/var/lib/postgresql`, not the pre-PostgreSQL-18 `/var/lib/postgresql/data` path. PostgreSQL data is stored at `/var/lib/postgresql/18/docker`; pgBackRest's async spool and health state share the same persistent volume.
+- Strict YAML mounted at `POSTGRES_SUPERVISOR_CONFIG`, defaulting to `/etc/postgres-supervisor/config.yaml`. [`config.example.yaml`](config.example.yaml) is the complete schema example.
+- Environment variables or mounted secret files selected by the YAML's `env`, `env_value_key`, and `env_file_path_key` fields. Use your platform's secret facility rather than plaintext environment files for production credentials.
 
-Mount `/var/lib/postgresql`, not the pre-PostgreSQL-18 `/var/lib/postgresql/data` path. PostgreSQL data is stored at `/var/lib/postgresql/18/docker`; pgBackRest's async spool and health state share the same persistent volume.
+[`examples/compose/`](examples/compose/) contains a Docker Compose smoke-test deployment. It is an example only, not a required deployment model.
 
-The S3 bucket must already exist. The stanza separates clusters within the bucket. With `PGBACKREST_S3_URI_STYLE=path` and `repo1-path=/`, pgBackRest writes to:
+The S3 bucket must already exist. The stanza separates clusters within the bucket. With `pgbackrest.s3.uri_style: path` and `repo1-path=/`, pgBackRest writes to:
 
 ```text
 <bucket>/archive/<stanza>/...
@@ -23,7 +23,7 @@ The S3 bucket must already exist. The stanza separates clusters within the bucke
 
 ## Supervisor Configuration
 
-The supervisor reads strict YAML from `POSTGRES_SUPERVISOR_CONFIG`, defaulting to `/etc/postgres-supervisor/config.yaml`. Unknown YAML fields are rejected. The file is read at container start; restart the container after changing `settings` or `hba`.
+The supervisor reads strict YAML from `POSTGRES_SUPERVISOR_CONFIG`, defaulting to `/etc/postgres-supervisor/config.yaml`. Unknown YAML fields are rejected. The file is read at container start; restart the container after changing `initdb`, `settings`, `hba`, or `pgbackrest`.
 
 ```yaml
 settings:
@@ -31,10 +31,19 @@ settings:
   shared_buffers: 256MB
 hba:
   - host all all 10.0.0.0/8 scram-sha-256
+initdb:
+  postgres_user:
+    env: POSTGRES_USER
+  postgres_password:
+    env_file_path_key: POSTGRES_PASSWORD_FILE
+  postgres_db:
+    env: POSTGRES_DB
 roles:
   - name:
       value: app_user
       # env: APP_USER
+    password:
+      env_file_path_key: APP_DATABASE_PASSWORD_FILE
     permissions:
       - database: radkit
         # schema: public # all non-system schemas when omitted
@@ -52,64 +61,67 @@ databases:
 
 `settings` is a map of PostgreSQL setting names to scalar YAML values. Strings are safely quoted in the generated `postgresql.conf`; numeric and boolean values are emitted as PostgreSQL scalars. `data_directory`, `hba_file`, `ident_file`, and `config_file` are reserved because the supervisor manages them.
 
+### InitDB And Passwords
+
+`initdb` is optional. When declared, its resolved values are passed to the official entrypoint for an empty `PGDATA`. `postgres_user` defaults to `POSTGRES_USER`, then `postgres`; `postgres_db` defaults to `POSTGRES_DB`, then the resolved `postgres_user`. Those two fields are bootstrap-only and are not changed after initialization.
+
+`initdb.postgres_password` defaults to exactly one of `POSTGRES_PASSWORD` and `POSTGRES_PASSWORD_FILE`. Its password is applied to the resolved bootstrap superuser after every successful PostgreSQL startup, so changing the referenced secret rotates that password on restart. The username is deliberately not renamed or reconciled.
+
+Roles may declare `password` with the same secret-source format. A declared password is applied on every reconciliation; omitting it leaves an existing role password unchanged. Roles, databases, schemas, extensions, and grants remain additive and are never removed automatically.
+
+`pgbackrest` is the source of truth for backup behavior, repository settings, retention, schedules, and the scheduler time zone. See [`config.example.yaml`](config.example.yaml) for a complete example. The section is optional; set `enabled: true` to enable WAL archiving and scheduled backups.
+
 `hba` contains complete `pg_hba.conf` records. The supervisor always prepends `local all all trust` so its local `pgx` reconciliation connection is available inside the container. If `hba` is omitted, the image additionally allows remote `scram-sha-256` password authentication for all users.
 
-Each `roles[].name` has exactly one of `value` or `env`. New roles are created with `LOGIN`; existing roles are not altered. Each permission grants only the listed `CREATE` and/or `USAGE` schema privileges. A missing `schema` applies the grant to all current non-system schemas in the specified database.
+Each `roles[].name` has exactly one of `value` or `env`. New roles are created with `LOGIN`; declared role passwords are reconciled, but other existing role attributes are not altered. Each permission grants only the listed `CREATE` and/or `USAGE` schema privileges. A missing `schema` applies the grant to all current non-system schemas in the specified database.
 
-The reconciler runs with `github.com/jackc/pgx/v5` after PostgreSQL is ready. It creates missing roles, databases, schemas, extensions, and explicit grants. It does not delete or alter databases, schemas, roles, extensions, or grants that were removed from YAML. The default local reconciliation user is `POSTGRES_USER`, falling back to `postgres`; set `POSTGRES_SUPERVISOR_ADMIN_USER` or `POSTGRES_SUPERVISOR_ADMIN_URL` when needed.
+The reconciler runs with `github.com/jackc/pgx/v5` after PostgreSQL is ready. It creates missing roles, databases, schemas, extensions, and explicit grants, and updates only declared role passwords. It does not delete or alter databases, schemas, roles, extensions, or grants that were removed from YAML. The default local reconciliation user is `initdb.postgres_user`, then `POSTGRES_USER`, then `postgres`; set `POSTGRES_SUPERVISOR_ADMIN_USER` or `POSTGRES_SUPERVISOR_ADMIN_URL` when needed.
 
-## Required Backup Variables
+## pgBackRest Configuration
 
-Set these whenever `PGBACKREST_ENABLED=true` or `PGBACKREST_RESTORE_ENABLED=true`.
+When `pgbackrest.enabled` is true, `stanza`, `s3.endpoint`, and `s3.bucket` are required. All other non-secret settings are optional.
 
-| Variable | Description |
-| --- | --- |
-| `PGBACKREST_STANZA` | Backup namespace for this PostgreSQL cluster. |
-| `PGBACKREST_S3_ENDPOINT` | S3-compatible endpoint, such as `https://s3.example.internal`. |
-| `PGBACKREST_S3_BUCKET` | Existing bucket containing the repository. |
-| `PGBACKREST_S3_KEY` | S3 access key. |
-| `PGBACKREST_S3_KEY_SECRET` | S3 secret access key. |
-
-`PGBACKREST_S3_KEY_FILE`, `PGBACKREST_S3_KEY_SECRET_FILE`, and `PGBACKREST_REPO_CIPHER_PASS_FILE` load values from files, which is suitable for Docker secrets. Each `_FILE` variable is mutually exclusive with its equivalent environment variable.
-
-## Optional Backup Variables
-
-| Variable | Default | Description |
+| YAML path | Default | Description |
 | --- | --- | --- |
-| `PGBACKREST_S3_REGION` | `us-east-1` | S3 signing region. |
-| `PGBACKREST_S3_URI_STYLE` | `path` | `path` or `host` addressing. |
-| `PGBACKREST_S3_VERIFY_TLS` | `true` | Set `false` only for a trusted self-signed endpoint. |
-| `PGBACKREST_REPO_CIPHER_PASS` | unset | Enables client-side AES-256-CBC repository encryption. Store this value securely and never change it for an existing repository. |
-| `PGBACKREST_RETENTION_FULL` | `2` | Number of completed full backup sets retained. pgBackRest needs space for retention plus one additional full backup before expiry. |
-| `PGBACKREST_RETENTION_ARCHIVE` | `2` | Archive retention count, not a number of days. It retains WAL required by retained backup sets. |
-| `PGBACKREST_PROCESS_MAX` | `4` | Concurrent pgBackRest transfer/compression processes. |
-| `PGBACKREST_ARCHIVE_PUSH_QUEUE_MAX` | `1GiB` | Maximum local async WAL queue. Exceeding it drops queued WAL so PostgreSQL stays available, but creates a PITR gap. Monitor it. |
-| `PGBACKREST_ARCHIVE_TIMEOUT` | `60` | Seconds a backup waits for required WAL to reach S3. |
-| `PGBACKREST_INITIAL_BACKUP` | `true` | Takes a full backup after the stanza's first successful check. |
-| `PGBACKREST_FULL_SCHEDULE` | `0 2 * * 0` | Five-field cron schedule for full backups. |
-| `PGBACKREST_DIFF_SCHEDULE` | `0 2 * * 1-6` | Five-field cron schedule for differential backups. |
-| `PGBACKREST_CHECK_SCHEDULE` | `*/5 * * * *` | Five-field cron schedule for `pgbackrest check`. |
-| `TZ` | `UTC` | Time zone used for backup schedules. |
+| `s3.region` | `us-east-1` | S3 signing region. |
+| `s3.uri_style` | `path` | `path` or `host` addressing. |
+| `s3.verify_tls` | `true` | Set `false` only for a trusted self-signed endpoint. |
+| `retention.full` | `2` | Completed full backup sets retained. pgBackRest needs space for retention plus one additional full backup before expiry. |
+| `retention.archive` | `2` | Archive retention count, not a number of days. It retains WAL required by retained backup sets. |
+| `process_max` | `4` | Concurrent pgBackRest transfer/compression processes. |
+| `archive.push_queue_max` | `1GiB` | Maximum local async WAL queue. Exceeding it drops queued WAL so PostgreSQL stays available, but creates a PITR gap. Monitor it. |
+| `archive.timeout_seconds` | `60` | Seconds a backup waits for required WAL to reach S3. |
+| `initial_backup` | `true` | Takes a full backup after the stanza's first successful check. |
+| `schedules.full` | `0 2 * * 0` | Five-field cron schedule for full backups. |
+| `schedules.differential` | `0 2 * * 1-6` | Five-field cron schedule for differential backups. |
+| `schedules.check` | `*/5 * * * *` | Five-field cron schedule for `pgbackrest check`. |
+| `timezone` | `UTC` | Time zone used for backup schedules. |
 
 The Go scheduler accepts standard five-field cron syntax with ranges, steps, lists, and wildcards. All backup commands run as the `postgres` operating-system user.
 
+### Secret Sources
+
+`initdb.postgres_password`, `roles[].password`, `s3.access_key`, `s3.secret_key`, and optional `repository_cipher_pass` define secret sources rather than secret values. `env_value_key` names an environment variable containing the secret. `env_file_path_key` names an environment variable containing the path to a secret file, suitable for mounted secret projections. Exactly one source must be set for each required secret; empty values and empty files are rejected.
+
+When an entire pgBackRest source declaration is omitted, it defaults to `PGBACKREST_S3_KEY`/`PGBACKREST_S3_KEY_FILE`, `PGBACKREST_S3_KEY_SECRET`/`PGBACKREST_S3_KEY_SECRET_FILE`, or `PGBACKREST_REPO_CIPHER_PASS`/`PGBACKREST_REPO_CIPHER_PASS_FILE`. A partially declared source uses only the listed keys. The example deliberately uses generic `S3_ACCESS_KEY` and `S3_SECRET_KEY` names instead. The supervisor removes configured secret variables from the PostgreSQL child environment, except for the resolved bootstrap values required by the official entrypoint.
+
 ## Startup And Health
 
-When backup is enabled, PostgreSQL starts immediately. The image then creates and checks the stanza in the background. A temporary S3 outage or invalid remote credentials does not stop PostgreSQL, but the Docker healthcheck stays unhealthy until the repository check succeeds.
+When `pgbackrest.enabled` is true, PostgreSQL starts immediately. The image then creates and checks the stanza in the background. A temporary S3 outage or invalid remote credentials does not stop PostgreSQL, but the container health check stays unhealthy until the repository check succeeds.
 
 The healthcheck verifies PostgreSQL readiness, successful reconciliation, and the latest pgBackRest maintenance result. It deliberately does not run `pgbackrest check` itself because that command forces a WAL switch. The scheduled check detects repository availability at the configured interval. The supervisor also serves the same result at `GET /healthz` on port `8081`, configurable with `POSTGRES_SUPERVISOR_HEALTH_ADDR`.
 
-Inspect backup status from the running container:
+Run pgBackRest commands as the `postgres` operating-system user in the running workload:
 
 ```bash
-docker exec -u postgres <container> pgbackrest --stanza=<stanza> info
+pgbackrest --stanza=<stanza> info
 ```
 
 Force a backup:
 
 ```bash
-docker exec -u postgres <container> pgbackrest --stanza=<stanza> --type=full backup
-docker exec -u postgres <container> pgbackrest --stanza=<stanza> --type=diff backup
+pgbackrest --stanza=<stanza> --type=full backup
+pgbackrest --stanza=<stanza> --type=diff backup
 ```
 
 `pg_isready` only proves that PostgreSQL accepts connections. It does not prove that WAL is reaching the repository. Use `pgbackrest info` and restore tests as operational checks.
@@ -118,32 +130,26 @@ docker exec -u postgres <container> pgbackrest --stanza=<stanza> --type=diff bac
 
 Restores are explicit. Set `PGBACKREST_RESTORE_ENABLED=true` and use an empty PostgreSQL volume. Restore mode refuses populated `PGDATA` rather than overwriting a cluster.
 
-For an isolated recovery test, disable future archiving:
+For an isolated recovery test, set `pgbackrest.enabled: false` in the mounted configuration and enable the explicit restore interlock:
 
 ```yaml
 environment:
-  PGBACKREST_ENABLED: 'false'
   PGBACKREST_RESTORE_ENABLED: 'true'
-  PGBACKREST_STANZA: app-prod
-  PGBACKREST_S3_ENDPOINT: https://s3.example.internal
-  PGBACKREST_S3_BUCKET: postgres-backups
-  PGBACKREST_S3_KEY_FILE: /run/secrets/s3-access-key
-  PGBACKREST_S3_KEY_SECRET_FILE: /run/secrets/s3-secret-key
 ```
 
 Restore variables:
 
 | Variable | Description |
 | --- | --- |
-| `PGBACKREST_RESTORE_ENABLED` | Must be `true` to restore an empty volume. |
+| `PGBACKREST_RESTORE_ENABLED` | Must be `true` to restore an empty volume. This is intentionally an environment safety interlock. |
 | `PGBACKREST_RESTORE_SET` | Optional pgBackRest backup label. Defaults to the latest valid backup. |
 | `PGBACKREST_RESTORE_TARGET_TIME` | Optional PostgreSQL recovery timestamp. Restores to that point and promotes the cluster. |
 
-With `PGBACKREST_ENABLED=false`, the restore is run with `--archive-mode=off`, so a recovery test cannot append WAL to the source stanza. To restore and then resume archival on a promoted replacement, set both `PGBACKREST_RESTORE_ENABLED=true` and `PGBACKREST_ENABLED=true`; ensure the former primary is permanently stopped before doing so.
+With `pgbackrest.enabled: false`, the restore is run with `--archive-mode=off`, so a recovery test cannot append WAL to the source stanza. To restore and then resume archival on a promoted replacement, set `pgbackrest.enabled: true` as well as `PGBACKREST_RESTORE_ENABLED=true`; ensure the former primary is permanently stopped before doing so.
 
 The image can create local PostgreSQL 18 clusters and restore pgBackRest backups. Restoring a cluster made with distro-managed PostgreSQL configuration may require its original `postgresql.conf`, `pg_hba.conf`, or tablespace paths to be made compatible with the container before startup. Test recovery on a representative clean host.
 
-`POSTGRES_USER`, `POSTGRES_PASSWORD`, and `POSTGRES_DB` only initialize an empty database. They do not alter users or passwords in a restored or existing cluster.
+Without `initdb`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, and `POSTGRES_DB` retain the official image's empty-volume-only behavior. With `initdb`, its declared `postgres_password` is reconciled on an existing or restored cluster; `postgres_user` and `postgres_db` remain bootstrap-only.
 
 ## Security And Operations
 
@@ -152,6 +158,6 @@ The image can create local PostgreSQL 18 clusters and restore pgBackRest backups
 - Enable bucket versioning or object locking separately. This image cannot make an object store immutable.
 - Use a dedicated bucket prefix/stanza for every independent cluster.
 - Test a real restore regularly. A successful backup is not proof of recoverability.
-- Use a Docker stop timeout of at least 90 seconds so PostgreSQL can shut down cleanly.
+- Configure a container termination grace period of at least 90 seconds so PostgreSQL can shut down cleanly.
 
 The image is published for `linux/amd64` only.

@@ -7,10 +7,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/jptrs93/container-images/pg18backrest/internal/config"
 	"github.com/jptrs93/container-images/pg18backrest/internal/status"
 	"github.com/robfig/cron/v3"
 )
@@ -32,48 +34,10 @@ type Manager struct {
 	archiveTimeout string
 }
 
-func New(pgData string) (*Manager, error) {
-	enabled, err := boolEnv("PGBACKREST_ENABLED", false)
-	if err != nil {
-		return nil, err
+func New(pgData, postgresUser string, options config.PGBackRestOptions) (*Manager, error) {
+	if postgresUser == "" {
+		postgresUser = "postgres"
 	}
-	restore, err := boolEnv("PGBACKREST_RESTORE_ENABLED", false)
-	if err != nil {
-		return nil, err
-	}
-	if !enabled && !restore {
-		return nil, nil
-	}
-
-	stanza, err := requiredEnv("PGBACKREST_STANZA")
-	if err != nil {
-		return nil, err
-	}
-	endpoint, err := requiredEnv("PGBACKREST_S3_ENDPOINT")
-	if err != nil {
-		return nil, err
-	}
-	bucket, err := requiredEnv("PGBACKREST_S3_BUCKET")
-	if err != nil {
-		return nil, err
-	}
-	key, err := fileEnv("PGBACKREST_S3_KEY")
-	if err != nil || key == "" {
-		return nil, requiredError("PGBACKREST_S3_KEY", err)
-	}
-	secret, err := fileEnv("PGBACKREST_S3_KEY_SECRET")
-	if err != nil || secret == "" {
-		return nil, requiredError("PGBACKREST_S3_KEY_SECRET", err)
-	}
-	verifyTLS, err := boolEnv("PGBACKREST_S3_VERIFY_TLS", true)
-	if err != nil {
-		return nil, err
-	}
-	uriStyle := envOr("PGBACKREST_S3_URI_STYLE", "path")
-	if uriStyle != "path" && uriStyle != "host" {
-		return nil, fmt.Errorf("PGBACKREST_S3_URI_STYLE must be path or host")
-	}
-
 	if err := os.MkdirAll(filepath.Dir(configPath), 0750); err != nil {
 		return nil, err
 	}
@@ -88,26 +52,26 @@ func New(pgData string) (*Manager, error) {
 	}
 
 	verify := "n"
-	if verifyTLS {
+	if options.S3VerifyTLS {
 		verify = "y"
 	}
 	lines := []string{
 		"[global]",
 		"repo1-type=s3",
 		"repo1-path=/",
-		"repo1-s3-endpoint=" + endpoint,
-		"repo1-s3-bucket=" + bucket,
-		"repo1-s3-region=" + envOr("PGBACKREST_S3_REGION", "us-east-1"),
-		"repo1-s3-key=" + key,
-		"repo1-s3-key-secret=" + secret,
-		"repo1-s3-uri-style=" + uriStyle,
+		"repo1-s3-endpoint=" + options.S3Endpoint,
+		"repo1-s3-bucket=" + options.S3Bucket,
+		"repo1-s3-region=" + options.S3Region,
+		"repo1-s3-key=" + options.S3AccessKey,
+		"repo1-s3-key-secret=" + options.S3SecretKey,
+		"repo1-s3-uri-style=" + options.S3URIStyle,
 		"repo1-storage-verify-tls=" + verify,
-		"repo1-retention-full=" + envOr("PGBACKREST_RETENTION_FULL", "2"),
-		"repo1-retention-archive=" + envOr("PGBACKREST_RETENTION_ARCHIVE", "2"),
+		"repo1-retention-full=" + strconv.Itoa(options.RetentionFull),
+		"repo1-retention-archive=" + strconv.Itoa(options.RetentionArchive),
 		"archive-async=y",
-		"archive-push-queue-max=" + envOr("PGBACKREST_ARCHIVE_PUSH_QUEUE_MAX", "1GiB"),
-		"archive-timeout=" + envOr("PGBACKREST_ARCHIVE_TIMEOUT", "60"),
-		"process-max=" + envOr("PGBACKREST_PROCESS_MAX", "4"),
+		"archive-push-queue-max=" + options.ArchivePushQueueMax,
+		"archive-timeout=" + strconv.Itoa(options.ArchiveTimeoutSeconds),
+		"process-max=" + strconv.Itoa(options.ProcessMax),
 		"compress-type=zst",
 		"repo1-bundle=y",
 		"repo1-block=y",
@@ -116,12 +80,10 @@ func New(pgData string) (*Manager, error) {
 		"log-level-file=detail",
 		"spool-path=" + spoolPath,
 	}
-	if cipher, err := fileEnv("PGBACKREST_REPO_CIPHER_PASS"); err != nil {
-		return nil, err
-	} else if cipher != "" {
-		lines = append(lines, "repo1-cipher-type=aes-256-cbc", "repo1-cipher-pass="+cipher)
+	if options.RepositoryCipherPass != "" {
+		lines = append(lines, "repo1-cipher-type=aes-256-cbc", "repo1-cipher-pass="+options.RepositoryCipherPass)
 	}
-	lines = append(lines, "", "["+stanza+"]", "pg1-path="+pgData, "pg1-port=5432", "pg1-user=postgres")
+	lines = append(lines, "", "["+options.Stanza+"]", "pg1-path="+pgData, "pg1-port=5432", "pg1-user="+postgresUser)
 	if err := os.WriteFile(configPath, []byte(strings.Join(lines, "\n")+"\n"), 0640); err != nil {
 		return nil, err
 	}
@@ -136,13 +98,13 @@ func New(pgData string) (*Manager, error) {
 	}
 
 	return &Manager{
-		Stanza:         stanza,
-		InitialBackup:  envOr("PGBACKREST_INITIAL_BACKUP", "true") == "true",
-		FullSchedule:   envOr("PGBACKREST_FULL_SCHEDULE", "0 2 * * 0"),
-		DiffSchedule:   envOr("PGBACKREST_DIFF_SCHEDULE", "0 2 * * 1-6"),
-		CheckSchedule:  envOr("PGBACKREST_CHECK_SCHEDULE", "*/5 * * * *"),
-		Timezone:       envOr("TZ", "UTC"),
-		archiveTimeout: envOr("PGBACKREST_ARCHIVE_TIMEOUT", "60"),
+		Stanza:         options.Stanza,
+		InitialBackup:  options.InitialBackup,
+		FullSchedule:   options.FullSchedule,
+		DiffSchedule:   options.DiffSchedule,
+		CheckSchedule:  options.CheckSchedule,
+		Timezone:       options.Timezone,
+		archiveTimeout: strconv.Itoa(options.ArchiveTimeoutSeconds),
 	}, nil
 }
 
@@ -154,7 +116,7 @@ func (manager *Manager) ArchiveTimeout() string {
 	return manager.archiveTimeout
 }
 
-func (manager *Manager) Restore(ctx context.Context, pgData string) error {
+func (manager *Manager) Restore(ctx context.Context, pgData string, archiveEnabled bool) error {
 	entries, err := os.ReadDir(pgData)
 	if err != nil && !os.IsNotExist(err) {
 		return err
@@ -179,8 +141,7 @@ func (manager *Manager) Restore(ctx context.Context, pgData string) error {
 	if target := os.Getenv("PGBACKREST_RESTORE_TARGET_TIME"); target != "" {
 		args = append(args, "--type=time", "--target="+target, "--target-action=promote")
 	}
-	enabled, _ := boolEnv("PGBACKREST_ENABLED", false)
-	if !enabled {
+	if !archiveEnabled {
 		args = append(args, "--archive-mode=off")
 	}
 	args = append(args, "restore")
@@ -301,55 +262,6 @@ func pgbackrestEnv() []string {
 		}
 	}
 	return values
-}
-
-func fileEnv(name string) (string, error) {
-	value := os.Getenv(name)
-	file := os.Getenv(name + "_FILE")
-	if value != "" && file != "" {
-		return "", fmt.Errorf("%s and %s_FILE cannot both be set", name, name)
-	}
-	if file == "" {
-		return value, nil
-	}
-	contents, err := os.ReadFile(file)
-	return strings.TrimSuffix(string(contents), "\n"), err
-}
-
-func requiredEnv(name string) (string, error) {
-	value := os.Getenv(name)
-	if value == "" {
-		return "", fmt.Errorf("%s must be set", name)
-	}
-	return value, nil
-}
-
-func requiredError(name string, err error) error {
-	if err != nil {
-		return err
-	}
-	return fmt.Errorf("%s must be set", name)
-}
-
-func boolEnv(name string, defaultValue bool) (bool, error) {
-	value := os.Getenv(name)
-	if value == "" {
-		return defaultValue, nil
-	}
-	if value == "true" {
-		return true, nil
-	}
-	if value == "false" {
-		return false, nil
-	}
-	return false, fmt.Errorf("%s must be true or false", name)
-}
-
-func envOr(name, fallback string) string {
-	if value := os.Getenv(name); value != "" {
-		return value
-	}
-	return fallback
 }
 
 func sleep(ctx context.Context, duration time.Duration) bool {

@@ -11,10 +11,10 @@ import (
 	"github.com/jptrs93/container-images/pg18backrest/internal/config"
 )
 
-func Reconcile(ctx context.Context, cfg config.Config) error {
+func Reconcile(ctx context.Context, cfg config.Config, initDB *config.InitDBOptions) error {
 	adminURL := os.Getenv("POSTGRES_SUPERVISOR_ADMIN_URL")
 	if adminURL == "" {
-		adminURL = socketURL(adminUser(), "postgres")
+		adminURL = socketURL(adminUser(initDB), "postgres")
 	}
 
 	admin, err := pgx.Connect(ctx, adminURL)
@@ -28,8 +28,17 @@ func Reconcile(ctx context.Context, cfg config.Config) error {
 		if err != nil {
 			return err
 		}
-		if err := ensureRole(ctx, admin, name); err != nil {
+		password, err := role.Password.Resolve(fmt.Sprintf("roles[%d].password", index), "", "", role.Password.Configured())
+		if err != nil {
 			return err
+		}
+		if err := ensureRole(ctx, admin, name, password); err != nil {
+			return err
+		}
+	}
+	if initDB != nil {
+		if err := setRolePassword(ctx, admin, initDB.PostgresUser, initDB.PostgresPassword); err != nil {
+			return fmt.Errorf("reconcile initdb superuser password: %w", err)
 		}
 	}
 
@@ -54,18 +63,31 @@ func Reconcile(ctx context.Context, cfg config.Config) error {
 	return nil
 }
 
-func ensureRole(ctx context.Context, conn *pgx.Conn, name string) error {
+func ensureRole(ctx context.Context, conn *pgx.Conn, name, password string) error {
 	var exists bool
 	if err := conn.QueryRow(ctx, "select exists(select 1 from pg_roles where rolname = $1)", name).Scan(&exists); err != nil {
 		return fmt.Errorf("check role %q: %w", name, err)
 	}
-	if exists {
-		return nil
+	if !exists {
+		if _, err := conn.Exec(ctx, "create role "+identifier(name)+" login"); err != nil {
+			return fmt.Errorf("create role %q: %w", name, err)
+		}
 	}
-	if _, err := conn.Exec(ctx, "create role "+identifier(name)+" login"); err != nil {
-		return fmt.Errorf("create role %q: %w", name, err)
+	if password != "" {
+		if err := setRolePassword(ctx, conn, name, password); err != nil {
+			return fmt.Errorf("set password for role %q: %w", name, err)
+		}
 	}
 	return nil
+}
+
+func setRolePassword(ctx context.Context, conn *pgx.Conn, name, password string) error {
+	if _, err := conn.Exec(ctx, "select set_config('postgres_supervisor.role', $1, false), set_config('postgres_supervisor.password', $2, false)", name, password); err != nil {
+		return err
+	}
+	defer conn.Exec(context.Background(), "select set_config('postgres_supervisor.role', '', false), set_config('postgres_supervisor.password', '', false)")
+	_, err := conn.Exec(ctx, "do $supervisor$ begin execute format('alter role %I password %L', current_setting('postgres_supervisor.role'), current_setting('postgres_supervisor.password')); end $supervisor$")
+	return err
 }
 
 func ensureDatabase(ctx context.Context, conn *pgx.Conn, adminURL string, database config.Database) error {
@@ -158,7 +180,7 @@ func applyPermission(ctx context.Context, adminURL, role string, permission conf
 
 func socketURL(user, database string) string {
 	if user == "" {
-		user = adminUser()
+		user = adminUser(nil)
 	}
 	url := &url.URL{Scheme: "postgres", User: url.User(user), Path: "/" + database}
 	query := url.Query()
@@ -167,9 +189,12 @@ func socketURL(user, database string) string {
 	return url.String()
 }
 
-func adminUser() string {
+func adminUser(initDB *config.InitDBOptions) string {
 	if user := os.Getenv("POSTGRES_SUPERVISOR_ADMIN_USER"); user != "" {
 		return user
+	}
+	if initDB != nil {
+		return initDB.PostgresUser
 	}
 	if user := os.Getenv("POSTGRES_USER"); user != "" {
 		return user

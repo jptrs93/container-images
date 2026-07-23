@@ -52,17 +52,39 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	var initDB *config.InitDBOptions
+	if cfg.InitDB != nil {
+		options, err := cfg.InitDB.Resolve()
+		if err != nil {
+			return err
+		}
+		initDB = &options
+	}
 
-	manager, backupErr := backup.New(pgData)
+	backupEnabled := cfg.PGBackRest != nil && cfg.PGBackRest.Enabled
+	restore := restoreEnabled()
+	var manager *backup.Manager
+	var backupErr error
+	if backupEnabled || restore {
+		if cfg.PGBackRest == nil {
+			backupErr = errors.New("pgbackrest configuration is required")
+		} else {
+			options, err := cfg.PGBackRest.Resolve()
+			if err == nil {
+				manager, err = backup.New(pgData, supervisorAdminUser(initDB), options)
+			}
+			backupErr = err
+		}
+	}
 	if backupErr != nil {
 		log.Printf("pgBackRest is disabled because its configuration is invalid: %v", backupErr)
 		_ = status.Write("/var/lib/postgresql/pgbackrest-state", "failed")
 	}
-	if restoreEnabled() {
+	if restore {
 		if manager == nil {
 			return errors.New("cannot restore without valid pgBackRest configuration")
 		}
-		if err := manager.Restore(context.Background(), pgData); err != nil {
+		if err := manager.Restore(context.Background(), pgData, backupEnabled); err != nil {
 			return fmt.Errorf("restore PostgreSQL data: %w", err)
 		}
 	}
@@ -71,7 +93,7 @@ func run() error {
 		PGData:          pgData,
 		ConfigDirectory: "/etc/postgres-supervisor",
 	}
-	if manager != nil && backupEnabled() {
+	if manager != nil && backupEnabled {
 		options.ArchiveCommand = manager.ArchiveCommand()
 		options.ArchiveTimeout = manager.ArchiveTimeout()
 	}
@@ -89,7 +111,7 @@ func run() error {
 	command.Stdout = os.Stdout
 	command.Stderr = os.Stderr
 	command.Stdin = os.Stdin
-	command.Env = postgresEnv()
+	command.Env = postgresEnv(cfg, initDB)
 	if err := command.Start(); err != nil {
 		return fmt.Errorf("start PostgreSQL: %w", err)
 	}
@@ -107,7 +129,7 @@ func run() error {
 		}
 	}()
 
-	go reconcileAndBackup(ctx, cfg, manager)
+	go reconcileAndBackup(ctx, cfg, initDB, manager, backupEnabled)
 	err = command.Wait()
 	cancel()
 	if err == nil {
@@ -120,12 +142,12 @@ func run() error {
 	return err
 }
 
-func reconcileAndBackup(ctx context.Context, cfg config.Config, manager *backup.Manager) {
+func reconcileAndBackup(ctx context.Context, cfg config.Config, initDB *config.InitDBOptions, manager *backup.Manager, backupEnabled bool) {
 	for {
-		if err := waitForPostgres(ctx); err != nil {
+		if err := waitForPostgres(ctx, supervisorAdminUser(initDB)); err != nil {
 			return
 		}
-		if err := reconciler.Reconcile(ctx, cfg); err != nil {
+		if err := reconciler.Reconcile(ctx, cfg, initDB); err != nil {
 			log.Printf("PostgreSQL reconciliation failed: %v", err)
 			_ = status.Write(supervisorStatePath, "failed")
 			if !sleep(ctx, 30*time.Second) {
@@ -134,16 +156,16 @@ func reconcileAndBackup(ctx context.Context, cfg config.Config, manager *backup.
 			continue
 		}
 		_ = status.Write(supervisorStatePath, "healthy")
-		if manager != nil && backupEnabled() {
+		if manager != nil && backupEnabled {
 			manager.Start(ctx)
 		}
 		return
 	}
 }
 
-func waitForPostgres(ctx context.Context) error {
+func waitForPostgres(ctx context.Context, user string) error {
 	for {
-		command := exec.CommandContext(ctx, "pg_isready", "-q", "-U", supervisorAdminUser())
+		command := exec.CommandContext(ctx, "pg_isready", "-q", "-U", user, "-d", "postgres")
 		if command.Run() == nil {
 			return nil
 		}
@@ -184,13 +206,13 @@ func shutdownHealthServer(server *http.Server) {
 }
 
 func healthcheck() error {
-	if err := exec.Command("pg_isready", "-q", "-U", supervisorAdminUser()).Run(); err != nil {
+	if err := exec.Command("pg_isready", "-q", "-U", supervisorAdminUser(nil), "-d", "postgres").Run(); err != nil {
 		return errors.New("PostgreSQL is not ready")
 	}
 	if !status.Healthy(supervisorStatePath) {
 		return errors.New("PostgreSQL reconciliation is not healthy")
 	}
-	if backupEnabled() && !status.Healthy("/var/lib/postgresql/pgbackrest-state") {
+	if pgBackRestEnabled() && !status.Healthy("/var/lib/postgresql/pgbackrest-state") {
 		return errors.New("pgBackRest is not healthy")
 	}
 	return nil
@@ -204,8 +226,9 @@ func runUpstream(arguments []string) error {
 	return command.Run()
 }
 
-func backupEnabled() bool {
-	return os.Getenv("PGBACKREST_ENABLED") == "true"
+func pgBackRestEnabled() bool {
+	cfg, err := config.Load(envOr("POSTGRES_SUPERVISOR_CONFIG", "/etc/postgres-supervisor/config.yaml"))
+	return err == nil && cfg.PGBackRest != nil && cfg.PGBackRest.Enabled
 }
 
 func restoreEnabled() bool {
@@ -219,9 +242,17 @@ func envOr(name, fallback string) string {
 	return fallback
 }
 
-func supervisorAdminUser() string {
+func supervisorAdminUser(initDB *config.InitDBOptions) string {
 	if user := os.Getenv("POSTGRES_SUPERVISOR_ADMIN_USER"); user != "" {
 		return user
+	}
+	if initDB != nil {
+		return initDB.PostgresUser
+	}
+	if cfg, err := config.Load(envOr("POSTGRES_SUPERVISOR_CONFIG", "/etc/postgres-supervisor/config.yaml")); err == nil && cfg.InitDB != nil {
+		if user, err := cfg.InitDB.ResolveUser(); err == nil {
+			return user
+		}
 	}
 	if user := os.Getenv("POSTGRES_USER"); user != "" {
 		return user
@@ -229,14 +260,54 @@ func supervisorAdminUser() string {
 	return "postgres"
 }
 
-func postgresEnv() []string {
-	values := make([]string, 0, len(os.Environ()))
-	for _, value := range os.Environ() {
-		if !strings.HasPrefix(value, "PGBACKREST_") {
-			values = append(values, value)
+func postgresEnv(cfg config.Config, initDB *config.InitDBOptions) []string {
+	excluded := map[string]struct{}{}
+	if cfg.PGBackRest != nil {
+		for _, source := range []config.SecretSource{
+			cfg.PGBackRest.S3.AccessKey,
+			cfg.PGBackRest.S3.SecretKey,
+			cfg.PGBackRest.RepositoryCipherPass,
+		} {
+			excludeSecretSource(excluded, source)
 		}
 	}
+	for _, role := range cfg.Roles {
+		excludeSecretSource(excluded, role.Password)
+	}
+	if cfg.InitDB != nil {
+		excludeSecretSource(excluded, cfg.InitDB.PostgresPassword)
+	}
+	if initDB != nil {
+		for _, name := range []string{"POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_PASSWORD_FILE", "POSTGRES_DB"} {
+			excluded[name] = struct{}{}
+		}
+	}
+	values := make([]string, 0, len(os.Environ()))
+	for _, value := range os.Environ() {
+		name, _, _ := strings.Cut(value, "=")
+		if !strings.HasPrefix(name, "PGBACKREST_") {
+			if _, ok := excluded[name]; !ok {
+				values = append(values, value)
+			}
+		}
+	}
+	if initDB != nil {
+		values = append(values,
+			"POSTGRES_USER="+initDB.PostgresUser,
+			"POSTGRES_PASSWORD="+initDB.PostgresPassword,
+			"POSTGRES_DB="+initDB.PostgresDB,
+		)
+	}
 	return values
+}
+
+func excludeSecretSource(excluded map[string]struct{}, source config.SecretSource) {
+	if source.EnvValueKey != "" {
+		excluded[source.EnvValueKey] = struct{}{}
+	}
+	if source.EnvFilePathKey != "" {
+		excluded[source.EnvFilePathKey] = struct{}{}
+	}
 }
 
 func sleep(ctx context.Context, duration time.Duration) bool {
