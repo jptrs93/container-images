@@ -95,11 +95,13 @@ func run() error {
 	}
 
 	signals := make(chan os.Signal, 1)
+	shutdownRequested := make(chan struct{})
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(signals)
 	go func() {
 		select {
 		case signal := <-signals:
+			close(shutdownRequested)
 			_ = command.Process.Signal(signal)
 		case <-ctx.Done():
 		}
@@ -108,6 +110,13 @@ func run() error {
 	go reconcileAndBackup(ctx, cfg, manager)
 	err = command.Wait()
 	cancel()
+	if err == nil {
+		select {
+		case <-shutdownRequested:
+		default:
+			return errors.New("PostgreSQL exited unexpectedly")
+		}
+	}
 	return err
 }
 
