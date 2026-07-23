@@ -25,7 +25,7 @@ func Reconcile(ctx context.Context, cfg config.Config, initDB *config.InitDBOpti
 	defer admin.Close(ctx)
 
 	for index, role := range cfg.Roles {
-		name, err := role.Name.Resolve(fmt.Sprintf("roles[%d].name", index))
+		name, err := role.Name.Resolve(fmt.Sprintf("roles[%d].name", index), true)
 		if err != nil {
 			return err
 		}
@@ -50,7 +50,7 @@ func Reconcile(ctx context.Context, cfg config.Config, initDB *config.InitDBOpti
 	}
 
 	for index, role := range cfg.Roles {
-		name, err := role.Name.Resolve(fmt.Sprintf("roles[%d].name", index))
+		name, err := role.Name.Resolve(fmt.Sprintf("roles[%d].name", index), true)
 		if err != nil {
 			return err
 		}

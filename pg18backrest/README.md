@@ -34,15 +34,11 @@ settings:
 hba:
   - host all all 10.0.0.0/8 scram-sha-256
 initdb:
-  postgres_user:
-    env: POSTGRES_USER
+  postgres_user: ${POSTGRES_USER}
   postgres_password: ${POSTGRES_PASSWORD}
-  postgres_db:
-    env: POSTGRES_DB
+  postgres_db: ${POSTGRES_DB}
 roles:
-  - name:
-      value: app_user
-      # env: APP_USER
+  - name: app_user
     password: ${APP_DATABASE_PASSWORD}
     permissions:
       - database: radkit
@@ -80,7 +76,7 @@ Roles may declare `password` with the same scalar secret format. A declared pass
 
 PostgreSQL logging is fixed to `stderr` with its logging collector disabled. The supervisor sends PostgreSQL, pgBackRest, and supervisor output to container stdout so `docker logs` and other container log collectors receive one stream.
 
-Each `roles[].name` has exactly one of `value` or `env`. New roles are created with `LOGIN`; declared role passwords are reconciled, but other existing role attributes are not altered. `grants` permits `CREATE` and `USAGE` on a schema. `table_grants` permits `SELECT`, `INSERT`, `UPDATE`, and `DELETE` on existing tables and tables subsequently created by the schema owner. A missing `schema` applies the grant to all current non-system schemas in the specified database.
+`roles[].name` is a scalar value. New roles are created with `LOGIN`; declared role passwords are reconciled, but other existing role attributes are not altered. `grants` permits `CREATE` and `USAGE` on a schema. `table_grants` permits `SELECT`, `INSERT`, `UPDATE`, and `DELETE` on existing tables and tables subsequently created by the schema owner. A missing `schema` applies the grant to all current non-system schemas in the specified database.
 
 The reconciler runs with `github.com/jackc/pgx/v5` after PostgreSQL is ready. It creates missing roles, databases, schemas, and extensions; reconciles schema and table grants; and updates only declared role passwords. It does not delete or alter databases, schemas, roles, or extensions removed from YAML. The default local reconciliation user is `initdb.postgres_user`, then `POSTGRES_USER`, then `postgres`; set `POSTGRES_SUPERVISOR_ADMIN_USER` or `POSTGRES_SUPERVISOR_ADMIN_URL` when needed.
 

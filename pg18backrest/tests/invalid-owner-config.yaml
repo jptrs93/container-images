@@ -1,6 +1,5 @@
 roles:
-  - name:
-      value: app_owner
+  - name: app_owner
     permissions:
       - database: app
         schema: app

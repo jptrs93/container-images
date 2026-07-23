@@ -3,11 +3,9 @@ settings:
 hba:
   - host all all all scram-sha-256
 initdb:
-  postgres_user:
-    value: integration_admin
+  postgres_user: integration_admin
   postgres_password: ${INTEGRATION_POSTGRES_PASSWORD}
-  postgres_db:
-    value: app
+  postgres_db: app
 pgbackrest:
   enabled: true
   stanza: integration
@@ -23,14 +21,11 @@ pgbackrest:
     differential: '59 23 31 12 *'
     check: '59 23 31 12 *'
 roles:
-  - name:
-      value: app_owner
+  - name: app_owner
     password: ${INTEGRATION_OWNER_PASSWORD}
-  - name:
-      value: reader_one
+  - name: reader_one
     password: ${INTEGRATION_READER_ONE_PASSWORD}
-  - name:
-      value: reader_two
+  - name: reader_two
     password: ${INTEGRATION_READER_TWO_PASSWORD}
     permissions:
       - database: app
@@ -39,8 +34,7 @@ roles:
           - USAGE
         table_grants:
           - SELECT
-  - name:
-      value: app_writer
+  - name: app_writer
     password: ${INTEGRATION_WRITER_PASSWORD}
     permissions:
       - database: app
@@ -51,8 +45,7 @@ roles:
           - SELECT
           - INSERT
           - UPDATE
-  - name:
-      value: audit_reader
+  - name: audit_reader
     password: ${INTEGRATION_AUDIT_READER_PASSWORD}
     permissions:
       - database: app

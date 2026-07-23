@@ -21,14 +21,11 @@ type Config struct {
 	environmentReferences []string
 }
 
-type ValueSource struct {
-	Value string `yaml:"value"`
-	Env   string `yaml:"env"`
-}
+type ValueSource string
 
 type Role struct {
 	Name        ValueSource  `yaml:"name"`
-	Password    SecretValue  `yaml:"password"`
+	Password    ValueSource  `yaml:"password"`
 	Permissions []Permission `yaml:"permissions"`
 }
 
@@ -48,7 +45,7 @@ type Database struct {
 
 type InitDB struct {
 	PostgresUser     ValueSource `yaml:"postgres_user"`
-	PostgresPassword SecretValue `yaml:"postgres_password"`
+	PostgresPassword ValueSource `yaml:"postgres_password"`
 	PostgresDB       ValueSource `yaml:"postgres_db"`
 }
 
@@ -68,7 +65,7 @@ type PGBackRest struct {
 	ProcessMax           int             `yaml:"process_max"`
 	InitialBackup        *bool           `yaml:"initial_backup"`
 	Timezone             string          `yaml:"timezone"`
-	RepositoryCipherPass SecretValue     `yaml:"repository_cipher_pass"`
+	RepositoryCipherPass ValueSource     `yaml:"repository_cipher_pass"`
 }
 
 type S3 struct {
@@ -78,8 +75,8 @@ type S3 struct {
 	Region    string      `yaml:"region"`
 	URIStyle  string      `yaml:"uri_style"`
 	VerifyTLS *bool       `yaml:"verify_tls"`
-	AccessKey SecretValue `yaml:"access_key"`
-	SecretKey SecretValue `yaml:"secret_key"`
+	AccessKey ValueSource `yaml:"access_key"`
+	SecretKey ValueSource `yaml:"secret_key"`
 }
 
 type Retention struct {
@@ -97,8 +94,6 @@ type Archive struct {
 	PushQueueMax   string `yaml:"push_queue_max"`
 	TimeoutSeconds int    `yaml:"timeout_seconds"`
 }
-
-type SecretValue string
 
 type PGBackRestOptions struct {
 	Stanza                string
@@ -164,7 +159,7 @@ func (cfg Config) EnvironmentReferences() []string {
 
 func (cfg Config) Validate() error {
 	for roleIndex, role := range cfg.Roles {
-		name, err := role.Name.Resolve(fmt.Sprintf("roles[%d].name", roleIndex))
+		name, err := role.Name.Resolve(fmt.Sprintf("roles[%d].name", roleIndex), true)
 		if err != nil {
 			return err
 		}
@@ -204,37 +199,21 @@ func (permission Permission) Validate() error {
 	return nil
 }
 
-func (source ValueSource) Resolve(field string) (string, error) {
-	if source.Value != "" && source.Env != "" {
-		return "", fmt.Errorf("%s cannot set both value and env", field)
+func (value ValueSource) Resolve(field string, required bool) (string, error) {
+	if value == "" && required {
+		return "", fmt.Errorf("%s is required", field)
 	}
-	if source.Env != "" {
-		value := os.Getenv(source.Env)
-		if value == "" {
-			return "", fmt.Errorf("%s environment variable %s is empty", field, source.Env)
-		}
-		return value, nil
-	}
-	if source.Value == "" {
-		return "", fmt.Errorf("%s must set value or env", field)
-	}
-	return source.Value, nil
+	return string(value), nil
 }
 
-func (source ValueSource) ResolveWithDefault(field, defaultEnv, fallback string) (string, error) {
-	if source.Value == "" && source.Env == "" {
+func (value ValueSource) ResolveWithDefault(field, defaultEnv, fallback string) (string, error) {
+	if value == "" {
 		if value := os.Getenv(defaultEnv); value != "" {
 			return value, nil
 		}
 		return fallback, nil
 	}
-	if source.Env == defaultEnv {
-		if value := os.Getenv(defaultEnv); value != "" {
-			return value, nil
-		}
-		return fallback, nil
-	}
-	return source.Resolve(field)
+	return value.Resolve(field, true)
 }
 
 func (initDB InitDB) Resolve() (InitDBOptions, error) {
@@ -330,17 +309,7 @@ func (pgBackRest PGBackRest) Resolve() (PGBackRestOptions, error) {
 	}, nil
 }
 
-func (value SecretValue) Resolve(field string, required bool) (string, error) {
-	if value == "" {
-		if required {
-			return "", fmt.Errorf("%s is required", field)
-		}
-		return "", nil
-	}
-	return string(value), nil
-}
-
-func (value SecretValue) Configured() bool {
+func (value ValueSource) Configured() bool {
 	return value != ""
 }
 

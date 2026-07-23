@@ -3,11 +3,9 @@ settings:
 hba:
   - host all all 10.0.0.0/8 scram-sha-256
 initdb:
-  postgres_user:
-    env: POSTGRES_USER
+  postgres_user: ${POSTGRES_USER}
   postgres_password: ${POSTGRES_PASSWORD}
-  postgres_db:
-    env: POSTGRES_DB
+  postgres_db: ${POSTGRES_DB}
 pgbackrest:
   enabled: true
   stanza: app-prod
@@ -33,8 +31,7 @@ pgbackrest:
   initial_backup: true
   timezone: UTC
 roles:
-  - name:
-      value: app_user
+  - name: app_user
     password: ${APP_DATABASE_PASSWORD}
     permissions:
       - database: radkit

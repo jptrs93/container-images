@@ -3,11 +3,9 @@ settings:
 hba:
   - host all all all scram-sha-256
 initdb:
-  postgres_user:
-    value: integration_admin
+  postgres_user: integration_admin
   postgres_password: ${INTEGRATION_POSTGRES_PASSWORD}
-  postgres_db:
-    value: app
+  postgres_db: app
 pgbackrest:
   enabled: false
   stanza: integration

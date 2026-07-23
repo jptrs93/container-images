@@ -27,8 +27,8 @@ func TestPGBackRestResolveUsesConfiguredSecretKeys(t *testing.T) {
 	}
 }
 
-func TestSecretValueResolvesLiteral(t *testing.T) {
-	value, err := SecretValue("literal-value").Resolve("test.secret", true)
+func TestValueSourceResolvesLiteral(t *testing.T) {
+	value, err := ValueSource("literal-value").Resolve("test.value", true)
 	if err != nil {
 		t.Fatalf("Resolve() error = %v", err)
 	}
@@ -45,7 +45,7 @@ func TestLoadResolvesStringEnvironmentReferencesOnce(t *testing.T) {
 	t.Setenv("TEST_PORT", "8443")
 	t.Setenv("TEST_NESTED", "${TEST_PASSWORD}")
 	path := t.TempDir() + "/config.yaml"
-	contents := "initdb:\n  postgres_password: ${TEST_PASSWORD}\nhba:\n  - ${TEST_HBA}\nroles:\n  - name:\n      value: ${TEST_ROLE}\npgbackrest:\n  enabled: true\n  stanza: app\n  s3:\n    host: ${TEST_HOST}\n    port: ${TEST_PORT}\n    bucket: backups\n    access_key: key\n    secret_key: secret\nsettings:\n  application_name: ${TEST_NESTED}\n"
+	contents := "initdb:\n  postgres_password: ${TEST_PASSWORD}\nhba:\n  - ${TEST_HBA}\nroles:\n  - name: ${TEST_ROLE}\npgbackrest:\n  enabled: true\n  stanza: app\n  s3:\n    host: ${TEST_HOST}\n    port: ${TEST_PORT}\n    bucket: backups\n    access_key: key\n    secret_key: secret\nsettings:\n  application_name: ${TEST_NESTED}\n"
 	if err := os.WriteFile(path, []byte(contents), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +53,7 @@ func TestLoadResolvesStringEnvironmentReferencesOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if cfg.InitDB.PostgresPassword != "password-from-environment" || cfg.HBA[0] != "host all all 10.0.0.0/8 scram-sha-256" || cfg.Roles[0].Name.Value != "app_user" || cfg.PGBackRest.S3.Host != "s3.example.internal" || cfg.PGBackRest.S3.Port != "8443" {
+	if cfg.InitDB.PostgresPassword != "password-from-environment" || cfg.HBA[0] != "host all all 10.0.0.0/8 scram-sha-256" || cfg.Roles[0].Name != "app_user" || cfg.PGBackRest.S3.Host != "s3.example.internal" || cfg.PGBackRest.S3.Port != "8443" {
 		t.Fatalf("resolved config = %#v", cfg)
 	}
 	if cfg.Settings["application_name"] != "${TEST_PASSWORD}" {
@@ -76,7 +76,7 @@ func TestLoadRejectsSecretSourceObject(t *testing.T) {
 
 func TestInitDBResolveUsesBootstrapUserAsDatabaseDefault(t *testing.T) {
 	options, err := InitDB{
-		PostgresUser:     ValueSource{Value: "bootstrap_admin"},
+		PostgresUser:     "bootstrap_admin",
 		PostgresPassword: "postgres-password",
 	}.Resolve()
 	if err != nil {
@@ -91,9 +91,7 @@ func TestInitDBResolveUsesOfficialUserAndDatabaseDefaults(t *testing.T) {
 	t.Setenv("POSTGRES_USER", "")
 	t.Setenv("POSTGRES_DB", "")
 	options, err := InitDB{
-		PostgresUser:     ValueSource{Env: "POSTGRES_USER"},
 		PostgresPassword: "postgres-password",
-		PostgresDB:       ValueSource{Env: "POSTGRES_DB"},
 	}.Resolve()
 	if err != nil {
 		t.Fatalf("Resolve() error = %v", err)
@@ -106,7 +104,7 @@ func TestInitDBResolveUsesOfficialUserAndDatabaseDefaults(t *testing.T) {
 func TestValidateRejectsGrantsForSchemaOwner(t *testing.T) {
 	cfg := Config{
 		Roles: []Role{{
-			Name: ValueSource{Value: "app_owner"},
+			Name: "app_owner",
 			Permissions: []Permission{{
 				Database: "app",
 				Schema:   "app",
