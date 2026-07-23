@@ -93,3 +93,24 @@ func TestInitDBResolveUsesOfficialUserAndDatabaseDefaults(t *testing.T) {
 		t.Fatalf("resolved user and database = %q, %q", options.PostgresUser, options.PostgresDB)
 	}
 }
+
+func TestValidateRejectsGrantsForSchemaOwner(t *testing.T) {
+	cfg := Config{
+		Roles: []Role{{
+			Name: ValueSource{Value: "app_owner"},
+			Permissions: []Permission{{
+				Database: "app",
+				Schema:   "app",
+				Grants:   []string{"USAGE"},
+			}},
+		}},
+		Databases: []Database{{
+			Name:    "app",
+			Owner:   "app_owner",
+			Schemas: []string{"app"},
+		}},
+	}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "owned by role") {
+		t.Fatalf("Validate() error = %v, want schema-owner grant error", err)
+	}
+}

@@ -49,6 +49,11 @@ roles:
         grants:
           - CREATE
           - USAGE
+        table_grants:
+          - SELECT
+          - INSERT
+          - UPDATE
+          - DELETE
 databases:
   - name: radkit
     owner: app_user

@@ -1,5 +1,5 @@
 settings:
-  max_connections: 50
+  max_connections: 75
 hba:
   - host all all all scram-sha-256
 initdb:
@@ -13,7 +13,7 @@ pgbackrest:
   enabled: false
   stanza: integration
   s3:
-    endpoint: http://pg18backrest-minio:9000
+    endpoint: http://pg18backrest-restore-minio:9000
     bucket: postgres-backups
     verify_tls: false
     access_key:

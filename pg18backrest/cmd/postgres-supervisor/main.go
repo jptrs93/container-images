@@ -22,15 +22,16 @@ import (
 const supervisorStatePath = "/var/lib/postgresql/supervisor-state"
 
 func main() {
+	log.SetOutput(os.Stdout)
 	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
 		if err := healthcheck(); err != nil {
-			fmt.Fprintln(os.Stderr, err)
+			fmt.Fprintln(os.Stdout, err)
 			os.Exit(1)
 		}
 		return
 	}
 	if err := run(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprintln(os.Stdout, err)
 		os.Exit(exitCode(err))
 	}
 }
@@ -51,6 +52,9 @@ func run() error {
 	cfg, err := config.Load(envOr("POSTGRES_SUPERVISOR_CONFIG", "/etc/postgres-supervisor/config.yaml"))
 	if err != nil {
 		return err
+	}
+	if err := cfg.Validate(); err != nil {
+		return fmt.Errorf("validate config: %w", err)
 	}
 	var initDB *config.InitDBOptions
 	if cfg.InitDB != nil {
@@ -113,7 +117,7 @@ func run() error {
 	commandArgs := append(arguments, "-c", "config_file=/etc/postgres-supervisor/postgresql.conf")
 	command := exec.Command("docker-entrypoint.sh", commandArgs...)
 	command.Stdout = os.Stdout
-	command.Stderr = os.Stderr
+	command.Stderr = os.Stdout
 	command.Stdin = os.Stdin
 	command.Env = postgresEnv(cfg, initDB)
 	if err := command.Start(); err != nil {
@@ -225,7 +229,7 @@ func healthcheck() error {
 func runUpstream(arguments []string) error {
 	command := exec.Command("docker-entrypoint.sh", arguments...)
 	command.Stdout = os.Stdout
-	command.Stderr = os.Stderr
+	command.Stderr = os.Stdout
 	command.Stdin = os.Stdin
 	return command.Run()
 }

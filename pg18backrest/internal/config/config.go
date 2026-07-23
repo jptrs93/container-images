@@ -29,9 +29,10 @@ type Role struct {
 }
 
 type Permission struct {
-	Database string   `yaml:"database"`
-	Schema   string   `yaml:"schema"`
-	Grants   []string `yaml:"grants"`
+	Database    string   `yaml:"database"`
+	Schema      string   `yaml:"schema"`
+	Grants      []string `yaml:"grants"`
+	TableGrants []string `yaml:"table_grants"`
 }
 
 type Database struct {
@@ -135,6 +136,48 @@ func Load(path string) (Config, error) {
 		return Config{}, fmt.Errorf("parse config: %w", err)
 	}
 	return cfg, nil
+}
+
+func (cfg Config) Validate() error {
+	for roleIndex, role := range cfg.Roles {
+		name, err := role.Name.Resolve(fmt.Sprintf("roles[%d].name", roleIndex))
+		if err != nil {
+			return err
+		}
+		for permissionIndex, permission := range role.Permissions {
+			if err := permission.Validate(); err != nil {
+				return fmt.Errorf("roles[%d].permissions[%d]: %w", roleIndex, permissionIndex, err)
+			}
+			for _, database := range cfg.Databases {
+				if database.Name != permission.Database || database.Owner != name {
+					continue
+				}
+				for _, schema := range database.Schemas {
+					if permission.Schema == "" || permission.Schema == schema {
+						return fmt.Errorf("roles[%d].permissions[%d] cannot manage grants on schema %q owned by role %q", roleIndex, permissionIndex, schema, name)
+					}
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func (permission Permission) Validate() error {
+	if permission.Database == "" || (len(permission.Grants) == 0 && len(permission.TableGrants) == 0) {
+		return fmt.Errorf("database and at least one grant are required")
+	}
+	for _, grant := range permission.Grants {
+		if grant != "CREATE" && grant != "USAGE" {
+			return fmt.Errorf("unsupported schema grant %q", grant)
+		}
+	}
+	for _, grant := range permission.TableGrants {
+		if grant != "SELECT" && grant != "INSERT" && grant != "UPDATE" && grant != "DELETE" {
+			return fmt.Errorf("unsupported table grant %q", grant)
+		}
+	}
+	return nil
 }
 
 func (source ValueSource) Resolve(field string) (string, error) {

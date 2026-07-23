@@ -52,6 +52,11 @@ roles:
         grants:
           - CREATE
           - USAGE
+        table_grants:
+          - SELECT
+          - INSERT
+          - UPDATE
+          - DELETE
 databases:
   - name: radkit
     owner: app_user
@@ -69,13 +74,15 @@ databases:
 
 `initdb.postgres_password` defaults to exactly one of `POSTGRES_PASSWORD` and `POSTGRES_PASSWORD_FILE`. Its password is applied to the resolved bootstrap superuser after every successful PostgreSQL startup, so changing the referenced secret rotates that password on restart. The username is deliberately not renamed or reconciled.
 
-Roles may declare `password` with the same secret-source format. A declared password is applied on every reconciliation; omitting it leaves an existing role password unchanged. Roles, databases, schemas, extensions, and grants remain additive and are never removed automatically.
+Roles may declare `password` with the same secret-source format. A declared password is applied on every reconciliation; omitting it leaves an existing role password unchanged. Roles, databases, schemas, and extensions remain additive and are never removed automatically. Schema and table grants for configured roles are reconciled to match the YAML configuration.
 
 `pgbackrest` is the source of truth for backup behavior, repository settings, retention, schedules, and the scheduler time zone. See [`config.example.yaml`](config.example.yaml) for a complete example. The section is optional; set `enabled: true` to enable WAL archiving and scheduled backups.
 
 `hba` contains complete `pg_hba.conf` records. The supervisor always prepends `local all all trust` so its local `pgx` reconciliation connection is available inside the container. If `hba` is omitted, the image additionally allows remote `scram-sha-256` password authentication for all users.
 
-Each `roles[].name` has exactly one of `value` or `env`. New roles are created with `LOGIN`; declared role passwords are reconciled, but other existing role attributes are not altered. Each permission grants only the listed `CREATE` and/or `USAGE` schema privileges. A missing `schema` applies the grant to all current non-system schemas in the specified database.
+PostgreSQL logging is fixed to `stderr` with its logging collector disabled. The supervisor sends PostgreSQL, pgBackRest, and supervisor output to container stdout so `docker logs` and other container log collectors receive one stream.
+
+Each `roles[].name` has exactly one of `value` or `env`. New roles are created with `LOGIN`; declared role passwords are reconciled, but other existing role attributes are not altered. `grants` permits `CREATE` and `USAGE` on a schema. `table_grants` permits `SELECT`, `INSERT`, `UPDATE`, and `DELETE` on existing tables and tables subsequently created by the schema owner. A missing `schema` applies the grant to all current non-system schemas in the specified database.
 
 The reconciler runs with `github.com/jackc/pgx/v5` after PostgreSQL is ready. It creates missing roles, databases, schemas, extensions, and explicit grants, and updates only declared role passwords. It does not delete or alter databases, schemas, roles, extensions, or grants that were removed from YAML. The default local reconciliation user is `initdb.postgres_user`, then `POSTGRES_USER`, then `postgres`; set `POSTGRES_SUPERVISOR_ADMIN_USER` or `POSTGRES_SUPERVISOR_ADMIN_URL` when needed.
 

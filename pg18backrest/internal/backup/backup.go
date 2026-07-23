@@ -152,7 +152,7 @@ func (manager *Manager) Start(ctx context.Context) {
 	go func() {
 		for {
 			if err := manager.initialize(ctx); err != nil {
-				fmt.Fprintf(os.Stderr, "pgBackRest initialization failed: %v\n", err)
+				fmt.Fprintf(os.Stdout, "pgBackRest initialization failed: %v\n", err)
 				_ = status.Write(statePath, "failed")
 				if !sleep(ctx, time.Minute) {
 					return
@@ -202,7 +202,7 @@ func (manager *Manager) hasBackup(ctx context.Context) (bool, error) {
 func (manager *Manager) schedule(ctx context.Context) {
 	location, err := time.LoadLocation(manager.Timezone)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "invalid backup timezone: %v\n", err)
+		fmt.Fprintf(os.Stdout, "invalid backup timezone: %v\n", err)
 		_ = status.Write(statePath, "failed")
 		return
 	}
@@ -219,13 +219,13 @@ func (manager *Manager) schedule(ctx context.Context) {
 		if _, err := scheduler.AddFunc(job.schedule, func() {
 			args := append([]string{"--stanza=" + manager.Stanza}, job.args...)
 			if err := manager.run(context.Background(), args...); err != nil {
-				fmt.Fprintf(os.Stderr, "scheduled pgBackRest command failed: %v\n", err)
+				fmt.Fprintf(os.Stdout, "scheduled pgBackRest command failed: %v\n", err)
 				_ = status.Write(statePath, "failed")
 				return
 			}
 			_ = status.Write(statePath, "healthy")
 		}); err != nil {
-			fmt.Fprintf(os.Stderr, "invalid pgBackRest schedule %q: %v\n", job.schedule, err)
+			fmt.Fprintf(os.Stdout, "invalid pgBackRest schedule %q: %v\n", job.schedule, err)
 			_ = status.Write(statePath, "failed")
 			return
 		}
@@ -242,7 +242,7 @@ func (manager *Manager) run(ctx context.Context, args ...string) error {
 	command := exec.CommandContext(ctx, "gosu", append([]string{"postgres", "pgbackrest"}, args...)...)
 	command.Env = pgbackrestEnv()
 	command.Stdout = os.Stdout
-	command.Stderr = os.Stderr
+	command.Stderr = os.Stdout
 	return command.Run()
 }
 
@@ -251,6 +251,7 @@ func (manager *Manager) output(ctx context.Context, args ...string) ([]byte, err
 	defer manager.commandMu.Unlock()
 	command := exec.CommandContext(ctx, "gosu", append([]string{"postgres", "pgbackrest"}, args...)...)
 	command.Env = pgbackrestEnv()
+	command.Stderr = os.Stdout
 	return command.Output()
 }
 

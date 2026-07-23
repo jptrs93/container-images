@@ -48,6 +48,8 @@ func WritePostgresFiles(cfg Config, options RuntimeOptions) error {
 		"data_directory = " + quote(options.PGData),
 		"hba_file = " + quote(hbaPath),
 		"ident_file = " + quote(identPath),
+		"logging_collector = off",
+		"log_destination = 'stderr'",
 	}
 
 	keys := make([]string, 0, len(cfg.Settings))
@@ -56,7 +58,7 @@ func WritePostgresFiles(cfg Config, options RuntimeOptions) error {
 			return fmt.Errorf("invalid PostgreSQL setting name %q", key)
 		}
 		switch key {
-		case "data_directory", "hba_file", "ident_file", "config_file":
+		case "data_directory", "hba_file", "ident_file", "config_file", "logging_collector", "log_destination":
 			return fmt.Errorf("PostgreSQL setting %q is managed by the supervisor", key)
 		}
 		keys = append(keys, key)

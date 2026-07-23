@@ -1,5 +1,5 @@
 settings:
-  max_connections: 50
+  max_connections: 75
 hba:
   - host all all all scram-sha-256
 initdb:
@@ -35,13 +35,6 @@ roles:
       value: reader_one
     password:
       env_value_key: INTEGRATION_READER_ONE_PASSWORD
-    permissions:
-      - database: app
-        schema: app
-        grants:
-          - USAGE
-        table_grants:
-          - SELECT
   - name:
       value: reader_two
     password:
@@ -66,11 +59,22 @@ roles:
           - SELECT
           - INSERT
           - UPDATE
-          - DELETE
+  - name:
+      value: audit_reader
+    password:
+      env_value_key: INTEGRATION_AUDIT_READER_PASSWORD
+    permissions:
+      - database: app
+        schema: app
+        grants:
+          - USAGE
+        table_grants:
+          - SELECT
 databases:
   - name: app
     owner: app_owner
     schemas:
       - app
+      - analytics
     extensions:
       - pgcrypto
