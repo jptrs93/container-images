@@ -1,0 +1,15 @@
+services:
+  postgres:
+    image: ghcr.io/jptrs93/pg18backrest:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - postgres-data:/var/lib/postgresql
+      - ./config.yaml:/etc/postgres-supervisor/config.yaml:ro
+    ports:
+      - '5432:5432'
+      - '8081:8081'
+    shm_size: 256mb
+
+volumes:
+  postgres-data:

@@ -1,0 +1,19 @@
+settings:
+  max_connections: 50
+hba:
+  - host all all all scram-sha-256
+roles:
+  - name:
+      value: app_user
+    permissions:
+      - database: app
+        grants:
+          - USAGE
+        schema: public
+databases:
+  - name: app
+    owner: app_user
+    schemas:
+      - staging
+    extensions:
+      - pgcrypto

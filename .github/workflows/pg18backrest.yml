@@ -1,0 +1,85 @@
+name: Build pg18backrest
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'pg18backrest/**'
+      - '.github/workflows/pg18backrest.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'pg18backrest/**'
+      - '.github/workflows/pg18backrest.yml'
+  workflow_dispatch:
+
+env:
+  IMAGE_NAME: ghcr.io/jptrs93/pg18backrest
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6.0.2
+      - uses: actions/setup-go@v6.0.0
+        with:
+          go-version-file: pg18backrest/go.mod
+      - name: Test Go packages
+        run: go test ./...
+        working-directory: pg18backrest
+      - name: Build test image
+        uses: docker/build-push-action@v6.18.0
+        with:
+          context: .
+          file: pg18backrest/Dockerfile
+          load: true
+          tags: pg18backrest:test
+          cache-from: type=gha,scope=pg18backrest
+          cache-to: type=gha,mode=max,scope=pg18backrest
+      - name: Run integration test
+        run: pg18backrest/tests/integration.sh pg18backrest:test
+      - name: Scan image
+        uses: aquasecurity/trivy-action@0.33.1
+        with:
+          image-ref: pg18backrest:test
+          format: table
+          exit-code: '1'
+          ignore-unfixed: true
+          severity: CRITICAL,HIGH
+
+  publish:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v6.0.2
+      - uses: docker/login-action@v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5.10.0
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest
+            type=raw,value=18
+            type=raw,value=18.4
+            type=sha,prefix=sha-
+      - uses: docker/setup-buildx-action@v3.12.0
+      - uses: docker/build-push-action@v6.18.0
+        with:
+          context: .
+          file: pg18backrest/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=pg18backrest
+          cache-to: type=gha,mode=max,scope=pg18backrest

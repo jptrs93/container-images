@@ -1,0 +1,19 @@
+settings:
+  max_connections: 100
+hba:
+  - host all all 10.0.0.0/8 scram-sha-256
+roles:
+  - name:
+      value: app_user
+    permissions:
+      - database: radkit
+        grants:
+          - CREATE
+          - USAGE
+databases:
+  - name: radkit
+    owner: app_user
+    schemas:
+      - staging
+    extensions:
+      - pgcrypto
