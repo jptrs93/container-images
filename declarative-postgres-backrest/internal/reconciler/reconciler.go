@@ -25,11 +25,14 @@ func Reconcile(ctx context.Context, cfg config.Config, initDB *config.InitDBOpti
 	defer admin.Close(ctx)
 
 	for index, role := range cfg.Roles {
-		name, err := role.Name.Resolve(fmt.Sprintf("roles[%d].name", index), true)
+		name, err := role.Name.Required(fmt.Sprintf("roles[%d].name", index))
 		if err != nil {
 			return err
 		}
-		password, err := role.Password.Resolve(fmt.Sprintf("roles[%d].password", index), role.Password.Configured())
+		password := ""
+		if role.Password.Configured() {
+			password, err = role.Password.Required(fmt.Sprintf("roles[%d].password", index))
+		}
 		if err != nil {
 			return err
 		}
@@ -50,7 +53,7 @@ func Reconcile(ctx context.Context, cfg config.Config, initDB *config.InitDBOpti
 	}
 
 	for index, role := range cfg.Roles {
-		name, err := role.Name.Resolve(fmt.Sprintf("roles[%d].name", index), true)
+		name, err := role.Name.Required(fmt.Sprintf("roles[%d].name", index))
 		if err != nil {
 			return err
 		}
@@ -70,10 +73,10 @@ func Reconcile(ctx context.Context, cfg config.Config, initDB *config.InitDBOpti
 func resetPermissions(ctx context.Context, adminURL, role string, databases []config.Database, permissions []config.Permission) error {
 	names := make(map[string]struct{}, len(databases)+len(permissions))
 	for _, database := range databases {
-		names[database.Name] = struct{}{}
+		names[string(database.Name)] = struct{}{}
 	}
 	for _, permission := range permissions {
-		names[permission.Database] = struct{}{}
+		names[string(permission.Database)] = struct{}{}
 	}
 	orderedNames := make([]string, 0, len(names))
 	for name := range names {
@@ -148,39 +151,41 @@ func ensureDatabase(ctx context.Context, conn *pgx.Conn, adminURL string, databa
 	if database.Name == "" || database.Owner == "" {
 		return fmt.Errorf("database name and owner are required")
 	}
+	name := string(database.Name)
+	owner := string(database.Owner)
 
 	var exists bool
-	if err := conn.QueryRow(ctx, "select exists(select 1 from pg_database where datname = $1)", database.Name).Scan(&exists); err != nil {
-		return fmt.Errorf("check database %q: %w", database.Name, err)
+	if err := conn.QueryRow(ctx, "select exists(select 1 from pg_database where datname = $1)", name).Scan(&exists); err != nil {
+		return fmt.Errorf("check database %q: %w", name, err)
 	}
 	if !exists {
-		if _, err := conn.Exec(ctx, "create database "+identifier(database.Name)+" owner "+identifier(database.Owner)); err != nil {
-			return fmt.Errorf("create database %q: %w", database.Name, err)
+		if _, err := conn.Exec(ctx, "create database "+identifier(name)+" owner "+identifier(owner)); err != nil {
+			return fmt.Errorf("create database %q: %w", name, err)
 		}
 	}
 
-	targetURL := databaseURL(adminURL, database.Name)
+	targetURL := databaseURL(adminURL, name)
 	databaseConn, err := pgx.Connect(ctx, targetURL)
 	if err != nil {
-		return fmt.Errorf("connect to database %q: %w", database.Name, err)
+		return fmt.Errorf("connect to database %q: %w", name, err)
 	}
 	defer databaseConn.Close(ctx)
 
 	for _, schema := range database.Schemas {
 		if schema == "" {
-			return fmt.Errorf("database %q has an empty schema", database.Name)
+			return fmt.Errorf("database %q has an empty schema", name)
 		}
-		statement := "create schema if not exists " + identifier(schema) + " authorization " + identifier(database.Owner)
+		statement := "create schema if not exists " + identifier(string(schema)) + " authorization " + identifier(owner)
 		if _, err := databaseConn.Exec(ctx, statement); err != nil {
-			return fmt.Errorf("create schema %q in database %q: %w", schema, database.Name, err)
+			return fmt.Errorf("create schema %q in database %q: %w", schema, name, err)
 		}
 	}
 	for _, extension := range database.Extensions {
 		if extension == "" {
-			return fmt.Errorf("database %q has an empty extension", database.Name)
+			return fmt.Errorf("database %q has an empty extension", name)
 		}
-		if _, err := databaseConn.Exec(ctx, "create extension if not exists "+identifier(extension)); err != nil {
-			return fmt.Errorf("create extension %q in database %q: %w", extension, database.Name, err)
+		if _, err := databaseConn.Exec(ctx, "create extension if not exists "+identifier(string(extension))); err != nil {
+			return fmt.Errorf("create extension %q in database %q: %w", extension, name, err)
 		}
 	}
 	return nil
@@ -191,16 +196,17 @@ func applyPermission(ctx context.Context, adminURL, role string, permission conf
 		return err
 	}
 
-	targetURL := databaseURL(adminURL, permission.Database)
+	database := string(permission.Database)
+	targetURL := databaseURL(adminURL, database)
 	conn, err := pgx.Connect(ctx, targetURL)
 	if err != nil {
-		return fmt.Errorf("connect to permission database %q: %w", permission.Database, err)
+		return fmt.Errorf("connect to permission database %q: %w", database, err)
 	}
 	defer conn.Close(ctx)
 
-	schemas := []string{permission.Schema}
+	schemas := []string{string(permission.Schema)}
 	if permission.Schema == "" {
-		schemas, err = nonSystemSchemas(ctx, conn, permission.Database)
+		schemas, err = nonSystemSchemas(ctx, conn, database)
 		if err != nil {
 			return err
 		}
@@ -210,21 +216,21 @@ func applyPermission(ctx context.Context, adminURL, role string, permission conf
 		if len(permission.Grants) != 0 {
 			statement := "grant " + strings.Join(permission.Grants, ", ") + " on schema " + identifier(schema) + " to " + identifier(role)
 			if _, err := conn.Exec(ctx, statement); err != nil {
-				return fmt.Errorf("grant on schema %q in database %q: %w", schema, permission.Database, err)
+				return fmt.Errorf("grant on schema %q in database %q: %w", schema, database, err)
 			}
 		}
 		if len(permission.TableGrants) != 0 {
 			statement := "grant " + strings.Join(permission.TableGrants, ", ") + " on all tables in schema " + identifier(schema) + " to " + identifier(role)
 			if _, err := conn.Exec(ctx, statement); err != nil {
-				return fmt.Errorf("grant on tables in schema %q in database %q: %w", schema, permission.Database, err)
+				return fmt.Errorf("grant on tables in schema %q in database %q: %w", schema, database, err)
 			}
-			owner, err := schemaOwner(ctx, conn, permission.Database, schema)
+			owner, err := schemaOwner(ctx, conn, database, schema)
 			if err != nil {
 				return err
 			}
 			statement = "alter default privileges for role " + identifier(owner) + " in schema " + identifier(schema) + " grant " + strings.Join(permission.TableGrants, ", ") + " on tables to " + identifier(role)
 			if _, err := conn.Exec(ctx, statement); err != nil {
-				return fmt.Errorf("grant default table privileges in schema %q in database %q: %w", schema, permission.Database, err)
+				return fmt.Errorf("grant default table privileges in schema %q in database %q: %w", schema, database, err)
 			}
 		}
 	}

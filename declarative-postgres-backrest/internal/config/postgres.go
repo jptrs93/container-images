@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 )
 
@@ -32,7 +31,9 @@ func WritePostgresFiles(cfg Config, options RuntimeOptions) error {
 	if len(cfg.HBA) == 0 {
 		hba = append(hba, "host all all all scram-sha-256")
 	} else {
-		hba = append(hba, cfg.HBA...)
+		for _, record := range cfg.HBA {
+			hba = append(hba, string(record))
+		}
 	}
 	if err := os.WriteFile(hbaPath, []byte(strings.Join(hba, "\n")+"\n"), 0644); err != nil {
 		return fmt.Errorf("write pg_hba.conf: %w", err)
@@ -85,17 +86,8 @@ func WritePostgresFiles(cfg Config, options RuntimeOptions) error {
 	return nil
 }
 
-func settingValue(value any) (string, error) {
-	switch value := value.(type) {
-	case string:
-		return quote(value), nil
-	case bool:
-		return strconv.FormatBool(value), nil
-	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64:
-		return fmt.Sprint(value), nil
-	default:
-		return "", fmt.Errorf("must be a scalar")
-	}
+func settingValue(value MaybeEnv) (string, error) {
+	return quote(string(value)), nil
 }
 
 func quote(value string) string {

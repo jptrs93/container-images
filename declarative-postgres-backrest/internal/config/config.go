@@ -12,41 +12,41 @@ import (
 )
 
 type Config struct {
-	InitDB                *InitDB        `yaml:"initdb"`
-	Settings              map[string]any `yaml:"settings"`
-	HBA                   []string       `yaml:"hba"`
-	Roles                 []Role         `yaml:"roles"`
-	Databases             []Database     `yaml:"databases"`
-	PGBackRest            *PGBackRest    `yaml:"pgbackrest"`
+	InitDB                *InitDB             `yaml:"initdb"`
+	Settings              map[string]MaybeEnv `yaml:"settings"`
+	HBA                   []MaybeEnv          `yaml:"hba"`
+	Roles                 []Role              `yaml:"roles"`
+	Databases             []Database          `yaml:"databases"`
+	PGBackRest            *PGBackRest         `yaml:"pgbackrest"`
 	environmentReferences []string
 }
 
-type ValueSource string
+type MaybeEnv string
 
 type Role struct {
-	Name        ValueSource  `yaml:"name"`
-	Password    ValueSource  `yaml:"password"`
+	Name        MaybeEnv     `yaml:"name"`
+	Password    MaybeEnv     `yaml:"password"`
 	Permissions []Permission `yaml:"permissions"`
 }
 
 type Permission struct {
-	Database    string   `yaml:"database"`
-	Schema      string   `yaml:"schema"`
+	Database    MaybeEnv `yaml:"database"`
+	Schema      MaybeEnv `yaml:"schema"`
 	Grants      []string `yaml:"grants"`
 	TableGrants []string `yaml:"table_grants"`
 }
 
 type Database struct {
-	Name       string   `yaml:"name"`
-	Owner      string   `yaml:"owner"`
-	Schemas    []string `yaml:"schemas"`
-	Extensions []string `yaml:"extensions"`
+	Name       MaybeEnv   `yaml:"name"`
+	Owner      MaybeEnv   `yaml:"owner"`
+	Schemas    []MaybeEnv `yaml:"schemas"`
+	Extensions []MaybeEnv `yaml:"extensions"`
 }
 
 type InitDB struct {
-	PostgresUser     ValueSource `yaml:"postgres_user"`
-	PostgresPassword ValueSource `yaml:"postgres_password"`
-	PostgresDB       ValueSource `yaml:"postgres_db"`
+	PostgresUser     MaybeEnv `yaml:"postgres_user"`
+	PostgresPassword MaybeEnv `yaml:"postgres_password"`
+	PostgresDB       MaybeEnv `yaml:"postgres_db"`
 }
 
 type InitDBOptions struct {
@@ -57,26 +57,26 @@ type InitDBOptions struct {
 
 type PGBackRest struct {
 	Enabled              bool            `yaml:"enabled"`
-	Stanza               string          `yaml:"stanza"`
+	Stanza               MaybeEnv        `yaml:"stanza"`
 	S3                   S3              `yaml:"s3"`
 	Retention            Retention       `yaml:"retention"`
 	Schedules            BackupSchedules `yaml:"schedules"`
 	Archive              Archive         `yaml:"archive"`
 	ProcessMax           int             `yaml:"process_max"`
 	InitialBackup        *bool           `yaml:"initial_backup"`
-	Timezone             string          `yaml:"timezone"`
-	RepositoryCipherPass ValueSource     `yaml:"repository_cipher_pass"`
+	Timezone             MaybeEnv        `yaml:"timezone"`
+	RepositoryCipherPass MaybeEnv        `yaml:"repository_cipher_pass"`
 }
 
 type S3 struct {
-	Host      string      `yaml:"host"`
-	Port      string      `yaml:"port"`
-	Bucket    string      `yaml:"bucket"`
-	Region    string      `yaml:"region"`
-	URIStyle  string      `yaml:"uri_style"`
-	VerifyTLS *bool       `yaml:"verify_tls"`
-	AccessKey ValueSource `yaml:"access_key"`
-	SecretKey ValueSource `yaml:"secret_key"`
+	Host      MaybeEnv `yaml:"host"`
+	Port      MaybeEnv `yaml:"port"`
+	Bucket    MaybeEnv `yaml:"bucket"`
+	Region    MaybeEnv `yaml:"region"`
+	URIStyle  MaybeEnv `yaml:"uri_style"`
+	VerifyTLS *bool    `yaml:"verify_tls"`
+	AccessKey MaybeEnv `yaml:"access_key"`
+	SecretKey MaybeEnv `yaml:"secret_key"`
 }
 
 type Retention struct {
@@ -85,14 +85,14 @@ type Retention struct {
 }
 
 type BackupSchedules struct {
-	Full         string `yaml:"full"`
-	Differential string `yaml:"differential"`
-	Check        string `yaml:"check"`
+	Full         MaybeEnv `yaml:"full"`
+	Differential MaybeEnv `yaml:"differential"`
+	Check        MaybeEnv `yaml:"check"`
 }
 
 type Archive struct {
-	PushQueueMax   string `yaml:"push_queue_max"`
-	TimeoutSeconds int    `yaml:"timeout_seconds"`
+	PushQueueMax   MaybeEnv `yaml:"push_queue_max"`
+	TimeoutSeconds int      `yaml:"timeout_seconds"`
 }
 
 type PGBackRestOptions struct {
@@ -127,29 +127,15 @@ func Load(path string) (Config, error) {
 		return Config{}, fmt.Errorf("read config: %w", err)
 	}
 
-	var document yaml.Node
-	if err := yaml.Unmarshal(contents, &document); err != nil {
-		return Config{}, fmt.Errorf("parse config: %w", err)
-	}
-	references := make(map[string]struct{})
-	if err := resolveEnvironmentReferences(&document, references); err != nil {
-		return Config{}, fmt.Errorf("resolve config values: %w", err)
-	}
-	resolved, err := yaml.Marshal(&document)
-	if err != nil {
-		return Config{}, fmt.Errorf("encode resolved config: %w", err)
-	}
-
 	var cfg Config
-	decoder := yaml.NewDecoder(bytes.NewReader(resolved))
+	decoder := yaml.NewDecoder(bytes.NewReader(contents))
 	decoder.KnownFields(true)
 	if err := decoder.Decode(&cfg); err != nil {
 		return Config{}, fmt.Errorf("parse config: %w", err)
 	}
-	for name := range references {
-		cfg.environmentReferences = append(cfg.environmentReferences, name)
+	if err := cfg.resolveEnvironmentReferences(); err != nil {
+		return Config{}, fmt.Errorf("resolve config values: %w", err)
 	}
-	sort.Strings(cfg.environmentReferences)
 	return cfg, nil
 }
 
@@ -159,7 +145,7 @@ func (cfg Config) EnvironmentReferences() []string {
 
 func (cfg Config) Validate() error {
 	for roleIndex, role := range cfg.Roles {
-		name, err := role.Name.Resolve(fmt.Sprintf("roles[%d].name", roleIndex), true)
+		name, err := role.Name.Required(fmt.Sprintf("roles[%d].name", roleIndex))
 		if err != nil {
 			return err
 		}
@@ -168,7 +154,7 @@ func (cfg Config) Validate() error {
 				return fmt.Errorf("roles[%d].permissions[%d]: %w", roleIndex, permissionIndex, err)
 			}
 			for _, database := range cfg.Databases {
-				if database.Name != permission.Database || database.Owner != name {
+				if database.Name != permission.Database || string(database.Owner) != name {
 					continue
 				}
 				for _, schema := range database.Schemas {
@@ -199,36 +185,42 @@ func (permission Permission) Validate() error {
 	return nil
 }
 
-func (value ValueSource) Resolve(field string, required bool) (string, error) {
-	if value == "" && required {
+func (value MaybeEnv) Resolve() (string, error) {
+	matches := environmentReference.FindStringSubmatch(string(value))
+	if len(matches) == 0 {
+		return string(value), nil
+	}
+	resolved, ok := os.LookupEnv(matches[1])
+	if !ok || resolved == "" {
+		return "", fmt.Errorf("environment variable %s is empty", matches[1])
+	}
+	return resolved, nil
+}
+
+func (value MaybeEnv) Required(field string) (string, error) {
+	if value == "" {
 		return "", fmt.Errorf("%s is required", field)
 	}
 	return string(value), nil
 }
 
-func (value ValueSource) ResolveWithDefault(field, defaultEnv, fallback string) (string, error) {
+func (value MaybeEnv) ResolveWithDefault(defaultEnv, fallback string) string {
 	if value == "" {
 		if value := os.Getenv(defaultEnv); value != "" {
-			return value, nil
+			return value
 		}
-		return fallback, nil
+		return fallback
 	}
-	return value.Resolve(field, true)
+	return string(value)
 }
 
 func (initDB InitDB) Resolve() (InitDBOptions, error) {
-	user, err := initDB.PostgresUser.ResolveWithDefault("initdb.postgres_user", "POSTGRES_USER", "postgres")
+	user := initDB.PostgresUser.ResolveWithDefault("POSTGRES_USER", "postgres")
+	password, err := initDB.PostgresPassword.Required("initdb.postgres_password")
 	if err != nil {
 		return InitDBOptions{}, err
 	}
-	password, err := initDB.PostgresPassword.Resolve("initdb.postgres_password", true)
-	if err != nil {
-		return InitDBOptions{}, err
-	}
-	database, err := initDB.PostgresDB.ResolveWithDefault("initdb.postgres_db", "POSTGRES_DB", user)
-	if err != nil {
-		return InitDBOptions{}, err
-	}
+	database := initDB.PostgresDB.ResolveWithDefault("POSTGRES_DB", user)
 	return InitDBOptions{
 		PostgresUser:     user,
 		PostgresPassword: password,
@@ -237,7 +229,7 @@ func (initDB InitDB) Resolve() (InitDBOptions, error) {
 }
 
 func (initDB InitDB) ResolveUser() (string, error) {
-	return initDB.PostgresUser.ResolveWithDefault("initdb.postgres_user", "POSTGRES_USER", "postgres")
+	return initDB.PostgresUser.ResolveWithDefault("POSTGRES_USER", "postgres"), nil
 }
 
 func (pgBackRest PGBackRest) Resolve() (PGBackRestOptions, error) {
@@ -251,21 +243,24 @@ func (pgBackRest PGBackRest) Resolve() (PGBackRestOptions, error) {
 		return PGBackRestOptions{}, fmt.Errorf("pgbackrest.s3.bucket must be set")
 	}
 
-	accessKey, err := pgBackRest.S3.AccessKey.Resolve("pgbackrest.s3.access_key", true)
+	accessKey, err := pgBackRest.S3.AccessKey.Required("pgbackrest.s3.access_key")
 	if err != nil {
 		return PGBackRestOptions{}, err
 	}
-	secretKey, err := pgBackRest.S3.SecretKey.Resolve("pgbackrest.s3.secret_key", true)
+	secretKey, err := pgBackRest.S3.SecretKey.Required("pgbackrest.s3.secret_key")
 	if err != nil {
 		return PGBackRestOptions{}, err
 	}
-	cipherPass, err := pgBackRest.RepositoryCipherPass.Resolve("pgbackrest.repository_cipher_pass", pgBackRest.RepositoryCipherPass.Configured())
+	cipherPass := ""
+	if pgBackRest.RepositoryCipherPass.Configured() {
+		cipherPass, err = pgBackRest.RepositoryCipherPass.Required("pgbackrest.repository_cipher_pass")
+	}
 	if err != nil {
 		return PGBackRestOptions{}, err
 	}
 	port := 443
 	if pgBackRest.S3.Port != "" {
-		port, err = strconv.Atoi(pgBackRest.S3.Port)
+		port, err = strconv.Atoi(string(pgBackRest.S3.Port))
 		if err != nil || port < 1 || port > 65535 {
 			return PGBackRestOptions{}, fmt.Errorf("pgbackrest.s3.port must be an integer between 1 and 65535")
 		}
@@ -286,10 +281,10 @@ func (pgBackRest PGBackRest) Resolve() (PGBackRestOptions, error) {
 	}
 
 	return PGBackRestOptions{
-		Stanza:                pgBackRest.Stanza,
-		S3Host:                pgBackRest.S3.Host,
+		Stanza:                string(pgBackRest.Stanza),
+		S3Host:                string(pgBackRest.S3.Host),
 		S3Port:                port,
-		S3Bucket:              pgBackRest.S3.Bucket,
+		S3Bucket:              string(pgBackRest.S3.Bucket),
 		S3Region:              defaultString(pgBackRest.S3.Region, "us-east-1"),
 		S3URIStyle:            uriStyle,
 		S3VerifyTLS:           defaultBool(pgBackRest.S3.VerifyTLS, true),
@@ -309,47 +304,124 @@ func (pgBackRest PGBackRest) Resolve() (PGBackRestOptions, error) {
 	}, nil
 }
 
-func (value ValueSource) Configured() bool {
+func (value MaybeEnv) Configured() bool {
 	return value != ""
 }
 
 var environmentReference = regexp.MustCompile(`^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$`)
 
-func resolveEnvironmentReferences(node *yaml.Node, references map[string]struct{}) error {
-	switch node.Kind {
-	case yaml.DocumentNode, yaml.SequenceNode:
-		for _, child := range node.Content {
-			if err := resolveEnvironmentReferences(child, references); err != nil {
-				return err
-			}
-		}
-	case yaml.MappingNode:
-		for index := 1; index < len(node.Content); index += 2 {
-			if err := resolveEnvironmentReferences(node.Content[index], references); err != nil {
-				return err
-			}
-		}
-	case yaml.ScalarNode:
-		if node.Tag != "!!str" {
-			return nil
-		}
-		matches := environmentReference.FindStringSubmatch(node.Value)
+func (cfg *Config) resolveEnvironmentReferences() error {
+	references := make(map[string]struct{})
+	resolve := func(field string, value *MaybeEnv) error {
+		matches := environmentReference.FindStringSubmatch(string(*value))
 		if len(matches) == 0 {
 			return nil
 		}
-		value, ok := os.LookupEnv(matches[1])
-		if !ok || value == "" {
-			return fmt.Errorf("environment variable %s is empty", matches[1])
+		resolved, err := value.Resolve()
+		if err != nil {
+			return fmt.Errorf("%s: %w", field, err)
 		}
-		node.Value = value
+		*value = MaybeEnv(resolved)
 		references[matches[1]] = struct{}{}
+		return nil
 	}
+
+	for name, value := range cfg.Settings {
+		if err := resolve("settings."+name, &value); err != nil {
+			return err
+		}
+		cfg.Settings[name] = value
+	}
+	for index := range cfg.HBA {
+		if err := resolve(fmt.Sprintf("hba[%d]", index), &cfg.HBA[index]); err != nil {
+			return err
+		}
+	}
+	if cfg.InitDB != nil {
+		if err := resolve("initdb.postgres_user", &cfg.InitDB.PostgresUser); err != nil {
+			return err
+		}
+		if err := resolve("initdb.postgres_password", &cfg.InitDB.PostgresPassword); err != nil {
+			return err
+		}
+		if err := resolve("initdb.postgres_db", &cfg.InitDB.PostgresDB); err != nil {
+			return err
+		}
+	}
+	for roleIndex := range cfg.Roles {
+		role := &cfg.Roles[roleIndex]
+		if err := resolve(fmt.Sprintf("roles[%d].name", roleIndex), &role.Name); err != nil {
+			return err
+		}
+		if err := resolve(fmt.Sprintf("roles[%d].password", roleIndex), &role.Password); err != nil {
+			return err
+		}
+		for permissionIndex := range role.Permissions {
+			permission := &role.Permissions[permissionIndex]
+			if err := resolve(fmt.Sprintf("roles[%d].permissions[%d].database", roleIndex, permissionIndex), &permission.Database); err != nil {
+				return err
+			}
+			if err := resolve(fmt.Sprintf("roles[%d].permissions[%d].schema", roleIndex, permissionIndex), &permission.Schema); err != nil {
+				return err
+			}
+		}
+	}
+	for databaseIndex := range cfg.Databases {
+		database := &cfg.Databases[databaseIndex]
+		if err := resolve(fmt.Sprintf("databases[%d].name", databaseIndex), &database.Name); err != nil {
+			return err
+		}
+		if err := resolve(fmt.Sprintf("databases[%d].owner", databaseIndex), &database.Owner); err != nil {
+			return err
+		}
+		for schemaIndex := range database.Schemas {
+			if err := resolve(fmt.Sprintf("databases[%d].schemas[%d]", databaseIndex, schemaIndex), &database.Schemas[schemaIndex]); err != nil {
+				return err
+			}
+		}
+		for extensionIndex := range database.Extensions {
+			if err := resolve(fmt.Sprintf("databases[%d].extensions[%d]", databaseIndex, extensionIndex), &database.Extensions[extensionIndex]); err != nil {
+				return err
+			}
+		}
+	}
+	if cfg.PGBackRest != nil {
+		pgBackRest := cfg.PGBackRest
+		values := []struct {
+			field string
+			value *MaybeEnv
+		}{
+			{"pgbackrest.stanza", &pgBackRest.Stanza},
+			{"pgbackrest.repository_cipher_pass", &pgBackRest.RepositoryCipherPass},
+			{"pgbackrest.s3.host", &pgBackRest.S3.Host},
+			{"pgbackrest.s3.port", &pgBackRest.S3.Port},
+			{"pgbackrest.s3.bucket", &pgBackRest.S3.Bucket},
+			{"pgbackrest.s3.region", &pgBackRest.S3.Region},
+			{"pgbackrest.s3.uri_style", &pgBackRest.S3.URIStyle},
+			{"pgbackrest.s3.access_key", &pgBackRest.S3.AccessKey},
+			{"pgbackrest.s3.secret_key", &pgBackRest.S3.SecretKey},
+			{"pgbackrest.schedules.full", &pgBackRest.Schedules.Full},
+			{"pgbackrest.schedules.differential", &pgBackRest.Schedules.Differential},
+			{"pgbackrest.schedules.check", &pgBackRest.Schedules.Check},
+			{"pgbackrest.archive.push_queue_max", &pgBackRest.Archive.PushQueueMax},
+			{"pgbackrest.timezone", &pgBackRest.Timezone},
+		}
+		for _, item := range values {
+			if err := resolve(item.field, item.value); err != nil {
+				return err
+			}
+		}
+	}
+	for name := range references {
+		cfg.environmentReferences = append(cfg.environmentReferences, name)
+	}
+	sort.Strings(cfg.environmentReferences)
 	return nil
 }
 
-func defaultString(value, fallback string) string {
+func defaultString(value MaybeEnv, fallback string) string {
 	if value != "" {
-		return value
+		return string(value)
 	}
 	return fallback
 }
