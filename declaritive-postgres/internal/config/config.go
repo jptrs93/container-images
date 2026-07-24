@@ -87,7 +87,7 @@ func (cfg Config) EnvironmentReferences() []string {
 	return cfg.environmentReferences
 }
 
-func (cfg Config) Validate() error {
+func (cfg *Config) Validate() error {
 	if err := validatePostgresSettings(cfg.Settings); err != nil {
 		return err
 	}
@@ -176,6 +176,7 @@ func (cfg Config) Validate() error {
 			extensions[value] = struct{}{}
 		}
 	}
+	cfg.insertDefaultsIfMissing()
 	return nil
 }
 

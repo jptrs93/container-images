@@ -42,7 +42,7 @@ type Manager struct {
 	initialState    string
 }
 
-func New(pgData, postgresUser string, options config.PGBackRestOptions) (*Manager, error) {
+func New(pgData, postgresUser string, connection config.ConnectionOptions, options config.PGBackRestOptions) (*Manager, error) {
 	if postgresUser == "" {
 		postgresUser = "postgres"
 	}
@@ -101,7 +101,7 @@ func New(pgData, postgresUser string, options config.PGBackRestOptions) (*Manage
 	if options.RepositoryCipherPass != "" {
 		lines = append(lines, "repo1-cipher-type=aes-256-cbc", "repo1-cipher-pass="+options.RepositoryCipherPass)
 	}
-	lines = append(lines, "", "["+options.Stanza+"]", "pg1-path="+pgData, "pg1-port=5432", "pg1-socket-path=/var/run/postgresql", "pg1-user="+postgresUser)
+	lines = append(lines, "", "["+options.Stanza+"]", "pg1-path="+pgData, "pg1-port="+connection.Port, "pg1-socket-path="+connection.SocketDirectory, "pg1-user="+postgresUser)
 	if err := os.WriteFile(configPath, []byte(strings.Join(lines, "\n")+"\n"), 0640); err != nil {
 		return nil, err
 	}

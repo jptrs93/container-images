@@ -126,7 +126,8 @@ backup_env=(
 
 docker run -d --name "$primary" --network "$network" --volume "$primary_volume":/var/lib/postgresql \
     --volume "$config_file":/etc/postgres-supervisor/config.yaml:ro \
-    "${backup_env[@]}" "$image" -p 5433 >/dev/null
+    -e PGHOST=/tmp -e PGPORT=5433 \
+    "${backup_env[@]}" "$image" -h '*' -p 5444 -k /var/run/postgresql >/dev/null
 
 if ! wait_for primary-ready docker exec "$primary" pg_isready -q -U integration_admin -d app; then
     docker logs "$primary"
@@ -138,6 +139,9 @@ if ! wait_for supervisor-ready docker exec "$primary" postgres-supervisor health
 fi
 wait_for initial-backup docker exec -u postgres "$primary" bash -c 'pgbackrest --stanza=integration --output=json info | grep -q '"'"'"label"'"'"''
 docker exec "$primary" psql -U integration_admin -d app -tAc 'show max_connections' | grep -qx 50
+docker exec "$primary" psql -U integration_admin -d app -tAc 'show listen_addresses' | grep -qx 127.0.0.1
+docker exec "$primary" psql -U integration_admin -d app -tAc 'show port' | grep -qx 5433
+docker exec "$primary" psql -U integration_admin -d app -tAc 'show unix_socket_directories' | grep -qx /tmp
 docker exec "$primary" psql -U integration_admin -d app -tAc "select has_schema_privilege('reader_one', 'app', 'USAGE')" | grep -qx t
 docker exec "$primary" psql -U integration_admin -d app -tAc "select exists(select 1 from pg_namespace where nspname = 'app')" | grep -qx t
 docker exec "$primary" psql -U integration_admin -d app -tAc "select exists(select 1 from pg_extension where extname = 'pgcrypto')" | grep -qx t
@@ -163,6 +167,7 @@ rotated_backup_env=(
 )
 docker run -d --name "$primary" --network "$network" --volume "$primary_volume":/var/lib/postgresql \
     --volume "$reconciled_config_file":/etc/postgres-supervisor/config.yaml:ro \
+    -e PGHOST=/tmp -e PGPORT=5433 \
     "${rotated_backup_env[@]}" "$image" >/dev/null
 if ! wait_for primary-ready-after-rotation docker exec "$primary" pg_isready -q -U integration_admin -d app; then
     docker logs "$primary"

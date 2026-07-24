@@ -28,7 +28,7 @@ func TestPostgresEnvInjectsInitDBValuesWithoutConflictingFileVariables(t *testin
 		t.Fatal("POSTGRES_INITDB_ARGS was not preserved")
 	}
 	if _, exists := values["PGPORT"]; exists {
-		t.Fatal("PGPORT was passed to the fixed-port PostgreSQL child")
+		t.Fatal("PGPORT was passed to the YAML-configured PostgreSQL child")
 	}
 }
 
@@ -44,6 +44,18 @@ func TestPostgresEnvPreservesReferencedOfficialBootstrapVariable(t *testing.T) {
 	}
 	if values := environmentMap(postgresEnv(cfg, nil)); values["POSTGRES_PASSWORD"] != "password" {
 		t.Fatal("referenced POSTGRES_PASSWORD was removed from the PostgreSQL child environment")
+	}
+}
+
+func TestPostgresChildEnvUsesConfiguredSocketAndPort(t *testing.T) {
+	t.Setenv("PGHOST", "/external/socket")
+	t.Setenv("PGPORT", "5444")
+	values := environmentMap(postgresChildEnv(config.Config{}, nil, config.ConnectionOptions{
+		SocketDirectory: "/configured/socket",
+		Port:            "5433",
+	}))
+	if values["PGHOST"] != "/configured/socket" || values["PGPORT"] != "5433" || values["PGSERVICE"] != "postgres-supervisor" || values["PGSERVICEFILE"] != "/etc/postgres-supervisor/pg_service.conf" {
+		t.Fatalf("PostgreSQL child connection environment = %#v", values)
 	}
 }
 
