@@ -1,4 +1,10 @@
 .DS_Store
+.idea/
+.vscode/
+*.iml
+*.swp
+*.swo
+*~
 .env
 .env.*
 !.env.example
