@@ -5,7 +5,7 @@ hba:
 initdb:
   postgres_user: integration_admin
   postgres_password: ${INTEGRATION_POSTGRES_PASSWORD}
-  postgres_db: app
+  postgres_db: postgres
 pgbackrest:
   enabled: false
   stanza: integration

@@ -5,7 +5,7 @@ hba:
 initdb:
   postgres_user: ${POSTGRES_USER}
   postgres_password: ${POSTGRES_PASSWORD}
-  postgres_db: ${POSTGRES_DB}
+  postgres_db: postgres
 pgbackrest:
   enabled: true
   stanza: app-prod
