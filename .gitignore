@@ -3,3 +3,4 @@
 .env.*
 !.env.example
 declarative-postgres-backrest/config.yaml
+declaritive-postgres/config.yaml

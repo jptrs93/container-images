@@ -15,10 +15,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jptrs93/container-images/declarative-postgres-backrest/internal/backup"
-	"github.com/jptrs93/container-images/declarative-postgres-backrest/internal/config"
-	"github.com/jptrs93/container-images/declarative-postgres-backrest/internal/reconciler"
-	"github.com/jptrs93/container-images/declarative-postgres-backrest/internal/status"
+	"github.com/jptrs93/container-images/declaritive-postgres/internal/config"
+	"github.com/jptrs93/container-images/declaritive-postgres/internal/reconciler"
+	"github.com/jptrs93/container-images/declaritive-postgres/internal/status"
 )
 
 const supervisorStatePath = "/var/lib/postgresql/supervisor-state"
@@ -71,61 +70,20 @@ func run() error {
 		return err
 	}
 
-	backupEnabled := cfg.PGBackRest != nil && cfg.PGBackRest.Enabled
-	restore := restoreEnabled()
-	var manager *backup.Manager
-	var backupErr error
-	if backupEnabled || restore {
-		if cfg.PGBackRest == nil {
-			backupErr = errors.New("pgbackrest configuration is required")
-		} else {
-			options, err := cfg.PGBackRest.Resolve()
-			if err == nil {
-				manager, err = backup.New(pgData, adminUser, options)
-			}
-			backupErr = err
-		}
-	}
-	if backupErr != nil {
-		return fmt.Errorf("configure pgBackRest: %w", backupErr)
-	}
 	if err := status.Write(supervisorStatePath, "starting"); err != nil {
 		return fmt.Errorf("write supervisor startup state: %w", err)
 	}
-	if manager != nil && backupEnabled {
-		if err := manager.SetStarting(); err != nil {
-			return fmt.Errorf("write pgBackRest startup state: %w", err)
-		}
-	}
-	if restore {
-		if manager == nil {
-			return errors.New("cannot restore without valid pgBackRest configuration")
-		}
-		restoreSignals := make(chan os.Signal, 2)
-		signal.Notify(restoreSignals, syscall.SIGINT, syscall.SIGTERM)
-		err := manager.Restore(context.Background(), pgData, backupEnabled, restoreSignals)
-		signal.Stop(restoreSignals)
-		if err != nil {
-			return fmt.Errorf("restore PostgreSQL data: %w", err)
-		}
-	}
-
-	options := config.RuntimeOptions{
+	if err := config.WritePostgresFiles(cfg, config.RuntimeOptions{
 		PGData:          pgData,
 		ConfigDirectory: "/etc/postgres-supervisor",
-	}
-	if manager != nil && backupEnabled {
-		options.ArchiveCommand = manager.ArchiveCommand()
-		options.ArchiveTimeout = manager.ArchiveTimeout()
-	}
-	if err := config.WritePostgresFiles(cfg, options); err != nil {
+	}); err != nil {
 		return err
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	server, err := startHealthServer(func() error {
-		return healthcheck(adminUser, manager, backupEnabled)
+		return healthcheck(adminUser)
 	})
 	if err != nil {
 		return err
@@ -138,21 +96,6 @@ func run() error {
 		"-c", "port=5432",
 		"-c", "unix_socket_directories=/var/run/postgresql",
 	)
-	if backupEnabled {
-		commandArgs = append(commandArgs,
-			"-c", "archive_mode=on",
-			"-c", "archive_command="+manager.ArchiveCommand(),
-			"-c", "archive_library=",
-			"-c", "archive_timeout="+manager.ArchiveTimeout(),
-		)
-	} else {
-		commandArgs = append(commandArgs,
-			"-c", "archive_mode=off",
-			"-c", "archive_command=",
-			"-c", "archive_library=",
-			"-c", "archive_timeout=60",
-		)
-	}
 	command := exec.Command("docker-entrypoint.sh", commandArgs...)
 	command.Stdout = os.Stdout
 	command.Stderr = os.Stdout
@@ -172,7 +115,7 @@ func run() error {
 
 	reconciliationFailed := make(chan error, 1)
 	go func() {
-		if err := reconcileAndBackup(ctx, cfg, initDB, adminUser, manager, backupEnabled); err != nil && ctx.Err() == nil {
+		if err := reconcile(ctx, cfg, initDB, adminUser); err != nil && ctx.Err() == nil {
 			reconciliationFailed <- err
 		}
 	}()
@@ -216,7 +159,7 @@ func run() error {
 	}
 }
 
-func reconcileAndBackup(ctx context.Context, cfg config.Config, initDB *config.InitDBOptions, adminUser string, manager *backup.Manager, backupEnabled bool) error {
+func reconcile(ctx context.Context, cfg config.Config, initDB *config.InitDBOptions, adminUser string) error {
 	if err := waitForPostgres(ctx, adminUser); err != nil {
 		return err
 	}
@@ -225,9 +168,6 @@ func reconcileAndBackup(ctx context.Context, cfg config.Config, initDB *config.I
 	}
 	if err := status.Write(supervisorStatePath, "healthy"); err != nil {
 		return fmt.Errorf("write successful reconciliation state: %w", err)
-	}
-	if manager != nil && backupEnabled {
-		manager.Start(ctx)
 	}
 	return nil
 }
@@ -278,15 +218,12 @@ func shutdownHealthServer(server *http.Server) {
 	_ = server.Shutdown(ctx)
 }
 
-func healthcheck(adminUser string, manager *backup.Manager, backupEnabled bool) error {
+func healthcheck(adminUser string) error {
 	if err := exec.Command("pg_isready", "-q", "-h", "/var/run/postgresql", "-p", "5432", "-U", adminUser, "-d", "postgres").Run(); err != nil {
 		return errors.New("PostgreSQL is not ready")
 	}
 	if !status.Healthy(supervisorStatePath) {
 		return errors.New("PostgreSQL reconciliation is not healthy")
-	}
-	if backupEnabled && (manager == nil || !manager.Healthy()) {
-		return errors.New("pgBackRest is not healthy")
 	}
 	return nil
 }
@@ -346,10 +283,6 @@ func runUpstream(arguments []string) error {
 	}
 }
 
-func restoreEnabled() bool {
-	return os.Getenv("PGBACKREST_RESTORE_ENABLED") == "true"
-}
-
 func envOr(name, fallback string) string {
 	if value := os.Getenv(name); value != "" {
 		return value
@@ -386,10 +319,8 @@ func postgresEnv(cfg config.Config, initDB *config.InitDBOptions) []string {
 	values := make([]string, 0, len(os.Environ()))
 	for _, value := range os.Environ() {
 		name, _, _ := strings.Cut(value, "=")
-		if !strings.HasPrefix(name, "PGBACKREST_") {
-			if _, ok := excluded[name]; !ok {
-				values = append(values, value)
-			}
+		if _, ok := excluded[name]; !ok {
+			values = append(values, value)
 		}
 	}
 	if initDB != nil {

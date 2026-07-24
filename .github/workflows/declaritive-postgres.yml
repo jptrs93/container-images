@@ -1,12 +1,12 @@
-name: Build declarative-postgres-backrest
+name: Build declaritive-postgres
 
 on:
   push:
     tags:
-      - '18.4_2.58.0_v*'
+      - '18.4_v*'
 
 env:
-  IMAGE_NAME: ghcr.io/jptrs93/declarative-postgres-backrest
+  IMAGE_NAME: ghcr.io/jptrs93/declaritive-postgres
 
 jobs:
   test:
@@ -17,14 +17,14 @@ jobs:
       - uses: actions/checkout@v6.0.2
       - uses: actions/setup-go@v6.0.0
         with:
-          go-version-file: declarative-postgres-backrest/go.mod
+          go-version-file: declaritive-postgres/go.mod
       - name: Test Go packages
         run: go test ./...
-        working-directory: declarative-postgres-backrest
+        working-directory: declaritive-postgres
       - name: Build test image
-        run: docker build --platform linux/amd64 -f declarative-postgres-backrest/Dockerfile -t declarative-postgres-backrest:test .
+        run: docker build --platform linux/amd64 -f declaritive-postgres/Dockerfile -t declaritive-postgres:test .
       - name: Run integration test
-        run: declarative-postgres-backrest/tests/integration.sh declarative-postgres-backrest:test
+        run: declaritive-postgres/tests/integration.sh declaritive-postgres:test
 
   publish:
     needs: test
@@ -41,9 +41,8 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Build image
         run: |
-          docker build --platform linux/amd64 -f declarative-postgres-backrest/Dockerfile \
+          docker build --platform linux/amd64 -f declaritive-postgres/Dockerfile \
             -t $IMAGE_NAME:$GITHUB_REF_NAME \
             .
       - name: Publish image
-        run: |
-          docker push $IMAGE_NAME:$GITHUB_REF_NAME
+        run: docker push $IMAGE_NAME:$GITHUB_REF_NAME

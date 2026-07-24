@@ -1,0 +1,6 @@
+pgbackrest:
+  enabled: true
+  stanza: invalid
+  s3:
+    access_key: key
+    secret_key: secret

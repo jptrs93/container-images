@@ -36,10 +36,6 @@ func Healthy(directory string) bool {
 	return Read(directory) == "healthy"
 }
 
-func Failed(directory string) bool {
-	return Read(directory) == "failed"
-}
-
 func Read(directory string) string {
 	contents, err := os.ReadFile(directory + "/status")
 	if err != nil {

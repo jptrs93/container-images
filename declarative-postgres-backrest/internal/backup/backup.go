@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/jptrs93/container-images/declarative-postgres-backrest/internal/config"
@@ -19,24 +21,33 @@ import (
 
 const (
 	configPath = "/etc/pgbackrest/pgbackrest.conf"
-	statePath  = "/var/lib/postgresql/pgbackrest-state"
+	stateRoot  = "/var/lib/postgresql/pgbackrest-state"
 	spoolPath  = "/var/lib/postgresql/pgbackrest-spool"
 )
 
 type Manager struct {
-	Stanza         string
-	InitialBackup  bool
-	FullSchedule   string
-	DiffSchedule   string
-	CheckSchedule  string
-	Timezone       string
-	commandMu      sync.Mutex
-	archiveTimeout string
+	Stanza          string
+	InitialBackup   bool
+	FullSchedule    string
+	DiffSchedule    string
+	CheckSchedule   string
+	Timezone        string
+	commandMu       sync.Mutex
+	stateMu         sync.RWMutex
+	archiveTimeout  string
+	statePath       string
+	repositoryState string
+	fullState       string
+	diffState       string
+	initialState    string
 }
 
 func New(pgData, postgresUser string, options config.PGBackRestOptions) (*Manager, error) {
 	if postgresUser == "" {
 		postgresUser = "postgres"
+	}
+	if !filepath.IsAbs(pgData) || strings.ContainsAny(pgData, "\r\n") || strings.ContainsAny(postgresUser, "\r\n") {
+		return nil, fmt.Errorf("PostgreSQL data path must be absolute, and the path and user must each be a single line")
 	}
 	if err := os.MkdirAll(filepath.Dir(configPath), 0750); err != nil {
 		return nil, err
@@ -52,10 +63,14 @@ func New(pgData, postgresUser string, options config.PGBackRestOptions) (*Manage
 	}
 
 	verify := "n"
-	endpoint := "http://" + options.S3Host
+	host := options.S3Host
+	if ip := net.ParseIP(strings.Trim(host, "[]")); ip != nil && ip.To4() == nil {
+		host = "[" + strings.Trim(host, "[]") + "]"
+	}
+	endpoint := "http://" + host
 	if options.S3VerifyTLS {
 		verify = "y"
-		endpoint = "https://" + options.S3Host
+		endpoint = "https://" + host
 	}
 	lines := []string{
 		"[global]",
@@ -86,7 +101,7 @@ func New(pgData, postgresUser string, options config.PGBackRestOptions) (*Manage
 	if options.RepositoryCipherPass != "" {
 		lines = append(lines, "repo1-cipher-type=aes-256-cbc", "repo1-cipher-pass="+options.RepositoryCipherPass)
 	}
-	lines = append(lines, "", "["+options.Stanza+"]", "pg1-path="+pgData, "pg1-port=5432", "pg1-user="+postgresUser)
+	lines = append(lines, "", "["+options.Stanza+"]", "pg1-path="+pgData, "pg1-port=5432", "pg1-socket-path=/var/run/postgresql", "pg1-user="+postgresUser)
 	if err := os.WriteFile(configPath, []byte(strings.Join(lines, "\n")+"\n"), 0640); err != nil {
 		return nil, err
 	}
@@ -100,7 +115,7 @@ func New(pgData, postgresUser string, options config.PGBackRestOptions) (*Manage
 		return nil, err
 	}
 
-	return &Manager{
+	manager := &Manager{
 		Stanza:         options.Stanza,
 		InitialBackup:  options.InitialBackup,
 		FullSchedule:   options.FullSchedule,
@@ -108,18 +123,40 @@ func New(pgData, postgresUser string, options config.PGBackRestOptions) (*Manage
 		CheckSchedule:  options.CheckSchedule,
 		Timezone:       options.Timezone,
 		archiveTimeout: strconv.Itoa(options.ArchiveTimeoutSeconds),
-	}, nil
+		statePath:      filepath.Join(stateRoot, options.Stanza),
+	}
+	manager.fullState = status.Read(manager.fullStatePath())
+	manager.diffState = status.Read(manager.diffStatePath())
+	return manager, nil
 }
 
 func (manager *Manager) ArchiveCommand() string {
-	return "pgbackrest --stanza=" + manager.Stanza + " archive-push %p"
+	return "pgbackrest --stanza=" + manager.Stanza + " archive-push '%p'"
 }
 
 func (manager *Manager) ArchiveTimeout() string {
 	return manager.archiveTimeout
 }
 
-func (manager *Manager) Restore(ctx context.Context, pgData string, archiveEnabled bool) error {
+func (manager *Manager) SetStarting() error {
+	if err := manager.setRepositoryState("starting"); err != nil {
+		return err
+	}
+	if manager.InitialBackup {
+		return manager.setInitialState("starting")
+	}
+	return nil
+}
+
+func (manager *Manager) Healthy() bool {
+	manager.stateMu.RLock()
+	defer manager.stateMu.RUnlock()
+	return manager.repositoryState == "healthy" &&
+		(!manager.InitialBackup || manager.initialState == "healthy") &&
+		manager.fullState != "failed" && manager.diffState != "failed"
+}
+
+func (manager *Manager) Restore(ctx context.Context, pgData string, archiveEnabled bool, signals <-chan os.Signal) error {
 	entries, err := os.ReadDir(pgData)
 	if err != nil && !os.IsNotExist(err) {
 		return err
@@ -148,7 +185,13 @@ func (manager *Manager) Restore(ctx context.Context, pgData string, archiveEnabl
 		args = append(args, "--archive-mode=off")
 	}
 	args = append(args, "restore")
-	return manager.run(ctx, args...)
+	if err := manager.runSupervised(ctx, signals, args...); err != nil {
+		if cleanupErr := os.RemoveAll(pgData); cleanupErr != nil {
+			return fmt.Errorf("%w; clean partial restore: %v", err, cleanupErr)
+		}
+		return err
+	}
+	return nil
 }
 
 func (manager *Manager) Start(ctx context.Context) {
@@ -156,13 +199,11 @@ func (manager *Manager) Start(ctx context.Context) {
 		for {
 			if err := manager.initialize(ctx); err != nil {
 				fmt.Fprintf(os.Stdout, "pgBackRest initialization failed: %v\n", err)
-				_ = status.Write(statePath, "failed")
 				if !sleep(ctx, time.Minute) {
 					return
 				}
 				continue
 			}
-			_ = status.Write(statePath, "healthy")
 			manager.schedule(ctx)
 			return
 		}
@@ -171,19 +212,36 @@ func (manager *Manager) Start(ctx context.Context) {
 
 func (manager *Manager) initialize(ctx context.Context) error {
 	if err := manager.run(ctx, "--stanza="+manager.Stanza, "stanza-create"); err != nil {
+		if ctx.Err() == nil {
+			_ = manager.setRepositoryState("failed")
+		}
 		return err
 	}
 	if err := manager.run(ctx, "--stanza="+manager.Stanza, "check"); err != nil {
+		if ctx.Err() == nil {
+			_ = manager.setRepositoryState("failed")
+		}
 		return err
 	}
+	_ = manager.setRepositoryState("healthy")
 	if manager.InitialBackup {
 		hasBackup, err := manager.hasBackup(ctx)
 		if err != nil {
+			if ctx.Err() == nil {
+				_ = manager.setRepositoryState("failed")
+				_ = manager.setInitialState("failed")
+			}
 			return err
 		}
 		if !hasBackup {
-			return manager.run(ctx, "--stanza="+manager.Stanza, "--type=full", "backup")
+			if err := manager.runBackup(ctx, "full", "--type=full", "backup"); err != nil {
+				if ctx.Err() == nil {
+					_ = manager.setInitialState("failed")
+				}
+				return err
+			}
 		}
+		_ = manager.setInitialState("healthy")
 	}
 	return nil
 }
@@ -203,33 +261,29 @@ func (manager *Manager) hasBackup(ctx context.Context) (bool, error) {
 }
 
 func (manager *Manager) schedule(ctx context.Context) {
-	location, err := time.LoadLocation(manager.Timezone)
-	if err != nil {
-		fmt.Fprintf(os.Stdout, "invalid backup timezone: %v\n", err)
-		_ = status.Write(statePath, "failed")
-		return
-	}
+	location, _ := time.LoadLocation(manager.Timezone)
 	scheduler := cron.New(cron.WithLocation(location))
 	for _, job := range []struct {
 		schedule string
 		args     []string
+		state    string
 	}{
-		{manager.FullSchedule, []string{"--type=full", "backup"}},
-		{manager.DiffSchedule, []string{"--type=diff", "backup"}},
-		{manager.CheckSchedule, []string{"check"}},
+		{manager.FullSchedule, []string{"--type=full", "backup"}, "full"},
+		{manager.DiffSchedule, []string{"--type=diff", "backup"}, "differential"},
+		{manager.CheckSchedule, []string{"check"}, "repository"},
 	} {
 		job := job
 		if _, err := scheduler.AddFunc(job.schedule, func() {
 			args := append([]string{"--stanza=" + manager.Stanza}, job.args...)
-			if err := manager.run(context.Background(), args...); err != nil {
+			if err := manager.runWithState(ctx, job.state, args...); err != nil {
+				if ctx.Err() != nil {
+					return
+				}
 				fmt.Fprintf(os.Stdout, "scheduled pgBackRest command failed: %v\n", err)
-				_ = status.Write(statePath, "failed")
-				return
 			}
-			_ = status.Write(statePath, "healthy")
 		}); err != nil {
 			fmt.Fprintf(os.Stdout, "invalid pgBackRest schedule %q: %v\n", job.schedule, err)
-			_ = status.Write(statePath, "failed")
+			_ = manager.setRepositoryState("failed")
 			return
 		}
 	}
@@ -239,14 +293,114 @@ func (manager *Manager) schedule(ctx context.Context) {
 	<-stop.Done()
 }
 
+func (manager *Manager) runBackup(ctx context.Context, state string, args ...string) error {
+	return manager.runWithState(ctx, state, append([]string{"--stanza=" + manager.Stanza}, args...)...)
+}
+
+func (manager *Manager) setState(name, value string) error {
+	manager.stateMu.Lock()
+	switch name {
+	case "repository":
+		manager.repositoryState = value
+	case "full":
+		manager.fullState = value
+	case "differential":
+		manager.diffState = value
+	case "initial":
+		manager.initialState = value
+	}
+	manager.stateMu.Unlock()
+	return status.Write(filepath.Join(manager.statePath, name), value)
+}
+
+func (manager *Manager) setRepositoryState(value string) error {
+	return manager.setState("repository", value)
+}
+
+func (manager *Manager) setInitialState(value string) error {
+	return manager.setState("initial", value)
+}
+
+func (manager *Manager) repositoryStatePath() string {
+	return filepath.Join(manager.statePath, "repository")
+}
+
+func (manager *Manager) fullStatePath() string {
+	return filepath.Join(manager.statePath, "full")
+}
+
+func (manager *Manager) diffStatePath() string {
+	return filepath.Join(manager.statePath, "differential")
+}
+
 func (manager *Manager) run(ctx context.Context, args ...string) error {
 	manager.commandMu.Lock()
 	defer manager.commandMu.Unlock()
+	return manager.runUnlocked(ctx, args...)
+}
+
+func (manager *Manager) runWithState(ctx context.Context, state string, args ...string) error {
+	manager.commandMu.Lock()
+	defer manager.commandMu.Unlock()
+	err := manager.runUnlocked(ctx, args...)
+	if ctx.Err() == nil {
+		value := "healthy"
+		if err != nil {
+			value = "failed"
+		}
+		_ = manager.setState(state, value)
+	}
+	return err
+}
+
+func (manager *Manager) runUnlocked(ctx context.Context, args ...string) error {
 	command := exec.CommandContext(ctx, "gosu", append([]string{"postgres", "pgbackrest"}, args...)...)
 	command.Env = pgbackrestEnv()
 	command.Stdout = os.Stdout
 	command.Stderr = os.Stdout
 	return command.Run()
+}
+
+func (manager *Manager) runSupervised(ctx context.Context, signals <-chan os.Signal, args ...string) error {
+	manager.commandMu.Lock()
+	defer manager.commandMu.Unlock()
+	command := exec.Command("gosu", append([]string{"postgres", "pgbackrest"}, args...)...)
+	command.Env = pgbackrestEnv()
+	command.Stdout = os.Stdout
+	command.Stderr = os.Stdout
+	if err := command.Start(); err != nil {
+		return err
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- command.Wait()
+	}()
+	contextDone := ctx.Done()
+	var shutdownDeadline <-chan time.Time
+	shutdownRequested := false
+	for {
+		select {
+		case err := <-done:
+			if err == nil && shutdownRequested {
+				return fmt.Errorf("restore interrupted")
+			}
+			return err
+		case received := <-signals:
+			shutdownRequested = true
+			_ = command.Process.Signal(received)
+			if shutdownDeadline == nil {
+				shutdownDeadline = time.After(30 * time.Second)
+			}
+		case <-contextDone:
+			contextDone = nil
+			shutdownRequested = true
+			_ = command.Process.Signal(syscall.SIGTERM)
+			shutdownDeadline = time.After(30 * time.Second)
+		case <-shutdownDeadline:
+			_ = command.Process.Kill()
+			return <-done
+		}
+	}
 }
 
 func (manager *Manager) output(ctx context.Context, args ...string) ([]byte, error) {

@@ -1,0 +1,48 @@
+settings:
+  max_connections: 50
+hba:
+  - host all all all scram-sha-256
+initdb:
+  postgres_user: integration_admin
+  postgres_password: ${INTEGRATION_POSTGRES_PASSWORD}
+  postgres_db: postgres
+roles:
+  - name: app_owner
+    password: ${INTEGRATION_OWNER_PASSWORD}
+  - name: reader_one
+    password: ${INTEGRATION_READER_ONE_PASSWORD}
+    permissions:
+      - database: app
+        schema: app
+        grants:
+          - USAGE
+        table_grants:
+          - SELECT
+  - name: reader_two
+    password: ${INTEGRATION_READER_TWO_PASSWORD}
+    permissions:
+      - database: app
+        schema: app
+        grants:
+          - USAGE
+        table_grants:
+          - SELECT
+  - name: app_writer
+    password: ${INTEGRATION_WRITER_PASSWORD}
+    permissions:
+      - database: app
+        schema: app
+        grants:
+          - USAGE
+        table_grants:
+          - SELECT
+          - INSERT
+          - UPDATE
+          - DELETE
+databases:
+  - name: app
+    owner: app_owner
+    schemas:
+      - app
+    extensions:
+      - pgcrypto

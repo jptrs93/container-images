@@ -12,8 +12,6 @@ import (
 type RuntimeOptions struct {
 	PGData          string
 	ConfigDirectory string
-	ArchiveCommand  string
-	ArchiveTimeout  string
 }
 
 var settingName = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_.-]*$`)
@@ -69,13 +67,6 @@ func WritePostgresFiles(cfg Config, options RuntimeOptions) error {
 		lines = append(lines, key+" = "+value)
 	}
 
-	if options.ArchiveCommand != "" {
-		lines = append(lines,
-			"archive_mode = on",
-			"archive_command = "+quote(options.ArchiveCommand),
-			"archive_timeout = "+options.ArchiveTimeout,
-		)
-	}
 	if err := os.WriteFile(postgresPath, []byte(strings.Join(lines, "\n")+"\n"), 0644); err != nil {
 		return fmt.Errorf("write postgresql.conf: %w", err)
 	}
@@ -94,7 +85,7 @@ func validatePostgresSettings(settings map[string]MaybeEnv) error {
 		}
 		seen[normalized] = key
 		switch normalized {
-		case "data_directory", "hba_file", "ident_file", "config_file", "listen_addresses", "port", "unix_socket_directories", "logging_collector", "log_destination", "archive_mode", "archive_command", "archive_library", "archive_timeout":
+		case "data_directory", "hba_file", "ident_file", "config_file", "listen_addresses", "port", "unix_socket_directories", "logging_collector", "log_destination":
 			return fmt.Errorf("PostgreSQL setting %q is managed by the supervisor", key)
 		}
 	}

@@ -151,3 +151,135 @@ func TestValidateRejectsGrantsForSchemaOwner(t *testing.T) {
 		t.Fatalf("Validate() error = %v, want schema-owner grant error", err)
 	}
 }
+
+func TestLoadRejectsMultipleYAMLDocuments(t *testing.T) {
+	path := t.TempDir() + "/config.yaml"
+	if err := os.WriteFile(path, []byte("settings:\n  max_connections: 10\n---\nsettings:\n  max_connections: 20\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "multiple YAML documents") {
+		t.Fatalf("Load() error = %v, want multiple-document error", err)
+	}
+}
+
+func TestValidateRejectsDuplicateRolesAndIncompleteDatabases(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     Config
+		message string
+	}{
+		{
+			name:    "duplicate role",
+			cfg:     Config{Roles: []Role{{Name: "reader"}, {Name: "reader"}}},
+			message: "declared more than once",
+		},
+		{
+			name:    "missing database owner",
+			cfg:     Config{Databases: []Database{{Name: "app"}}},
+			message: "databases[0].owner is required",
+		},
+		{
+			name:    "empty schema",
+			cfg:     Config{Databases: []Database{{Name: "app", Owner: "owner", Schemas: []MaybeEnv{""}}}},
+			message: "databases[0].schemas[0] is required",
+		},
+		{
+			name:    "empty extension",
+			cfg:     Config{Databases: []Database{{Name: "app", Owner: "owner", Extensions: []MaybeEnv{""}}}},
+			message: "databases[0].extensions[0] is required",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := test.cfg.Validate(); err == nil || !strings.Contains(err.Error(), test.message) {
+				t.Fatalf("Validate() error = %v, want %q", err, test.message)
+			}
+		})
+	}
+}
+
+func TestPGBackRestResolveRejectsInvalidStartupConfiguration(t *testing.T) {
+	valid := PGBackRest{
+		Enabled: true,
+		Stanza:  "app-prod",
+		S3: S3{
+			Host:      "s3.example.internal",
+			Bucket:    "backups",
+			AccessKey: "key",
+			SecretKey: "secret",
+		},
+	}
+	tests := []struct {
+		name    string
+		mutate  func(*PGBackRest)
+		message string
+	}{
+		{"unsafe stanza", func(value *PGBackRest) { value.Stanza = "app;false" }, "pgbackrest.stanza"},
+		{"host scheme", func(value *PGBackRest) { value.S3.Host = "https://s3.example.internal" }, "must not include"},
+		{"invalid full schedule", func(value *PGBackRest) { value.Schedules.Full = "not cron" }, "schedules.full"},
+		{"invalid timezone", func(value *PGBackRest) { value.Timezone = "Not/AZone" }, "timezone"},
+		{"invalid queue size", func(value *PGBackRest) { value.Archive.PushQueueMax = "lots" }, "push_queue_max"},
+		{"excessive queue size", func(value *PGBackRest) { value.Archive.PushQueueMax = "5PiB" }, "push_queue_max"},
+		{"invalid host", func(value *PGBackRest) { value.S3.Host = "host/path" }, "valid hostname"},
+		{"bracketed IPv4 host", func(value *PGBackRest) { value.S3.Host = "[127.0.0.1]" }, "valid hostname"},
+		{"excessive processes", func(value *PGBackRest) { value.ProcessMax = 1000 }, "process_max"},
+		{"multiline secret", func(value *PGBackRest) { value.S3.SecretKey = "secret\nvalue" }, "single line"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			value := valid
+			test.mutate(&value)
+			if _, err := value.Resolve(); err == nil || !strings.Contains(err.Error(), test.message) {
+				t.Fatalf("Resolve() error = %v, want %q", err, test.message)
+			}
+		})
+	}
+}
+
+func TestResolveEnvironmentOrFile(t *testing.T) {
+	path := t.TempDir() + "/postgres-user"
+	if err := os.WriteFile(path, []byte("file_admin\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TEST_POSTGRES_USER_FILE", path)
+	value, err := ResolveEnvironmentOrFile("TEST_POSTGRES_USER", "postgres")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value != "file_admin" {
+		t.Fatalf("ResolveEnvironmentOrFile() = %q, want file_admin", value)
+	}
+	t.Setenv("TEST_POSTGRES_USER", "direct_admin")
+	if _, err := ResolveEnvironmentOrFile("TEST_POSTGRES_USER", "postgres"); err == nil || !strings.Contains(err.Error(), "both") {
+		t.Fatalf("ResolveEnvironmentOrFile() conflict error = %v", err)
+	}
+	t.Setenv("TEST_POSTGRES_USER", "")
+	value, err = ResolveEnvironmentOrFile("TEST_POSTGRES_USER", "postgres")
+	if err != nil || value != "file_admin" {
+		t.Fatalf("ResolveEnvironmentOrFile() with empty direct value = %q, %v", value, err)
+	}
+	t.Setenv("TEST_POSTGRES_USER_FILE", "")
+	value, err = ResolveEnvironmentOrFile("TEST_POSTGRES_USER", "postgres")
+	if err != nil || value != "postgres" {
+		t.Fatalf("ResolveEnvironmentOrFile() with empty file variable = %q, %v", value, err)
+	}
+	emptyPath := t.TempDir() + "/empty-user"
+	if err := os.WriteFile(emptyPath, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TEST_POSTGRES_USER_FILE", emptyPath)
+	value, err = ResolveEnvironmentOrFile("TEST_POSTGRES_USER", "postgres")
+	if err != nil || value != "" {
+		t.Fatalf("ResolveEnvironmentOrFile() with empty file = %q, %v", value, err)
+	}
+}
+
+func TestValidateRejectsInitDBUserDuplicatedAsRole(t *testing.T) {
+	cfg := Config{
+		InitDB: &InitDB{PostgresUser: "postgres", PostgresPassword: "password"},
+		Roles:  []Role{{Name: "postgres", Password: "different-password"}},
+	}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "duplicates initdb.postgres_user") {
+		t.Fatalf("Validate() error = %v, want initdb user duplication error", err)
+	}
+}

@@ -1,0 +1,18 @@
+settings:
+  max_connections: 100
+hba:
+  - host all all all scram-sha-256
+initdb:
+  postgres_user: ${POSTGRES_USER}
+  postgres_password: ${POSTGRES_PASSWORD}
+  postgres_db: postgres
+roles:
+  - name: app_user
+    password: ${APP_DATABASE_PASSWORD}
+databases:
+  - name: radkit
+    owner: app_user
+    schemas:
+      - staging
+    extensions:
+      - pgcrypto
