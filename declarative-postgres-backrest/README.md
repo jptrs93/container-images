@@ -17,6 +17,17 @@ If no configuration file is mounted, the normal official `postgres` initializati
 
 ## Examples
 
+### Minimal postgres only
+
+If you want the minimal possible setup with a single super user and database:
+
+```yaml
+initdb:
+  postgres_user: app_admin
+  postgres_password: ${POSTGRES_PASSWORD}
+  postgres_db: app
+```
+
 ### PostgreSQL Only
 
 This complete configuration creates an application owner, a read-only role, the `app` database, and a `staging` schema. Omitting `pgbackrest` disables backup management.
@@ -30,7 +41,7 @@ hba:
 initdb:
   postgres_user: postgres
   postgres_password: ${POSTGRES_PASSWORD}
-  postgres_db: app
+  postgres_db: postgres
 roles:
   - name: app_owner
     password: ${APP_OWNER_PASSWORD}
@@ -64,7 +75,7 @@ hba:
 initdb:
   postgres_user: postgres
   postgres_password: ${POSTGRES_PASSWORD}
-  postgres_db: app
+  postgres_db: postgres
 pgbackrest:
   enabled: true
   stanza: app-production
