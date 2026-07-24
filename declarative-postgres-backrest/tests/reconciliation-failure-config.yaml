@@ -1,0 +1,9 @@
+initdb:
+  postgres_user: postgres
+  postgres_password: integration-password
+  postgres_db: postgres
+databases:
+  - name: app
+    owner: postgres
+    extensions:
+      - extension_that_does_not_exist

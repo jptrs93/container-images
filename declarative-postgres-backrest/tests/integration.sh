@@ -7,6 +7,9 @@ config_file="$repository_root/declarative-postgres-backrest/tests/config.yaml"
 reconciled_config_file="$repository_root/declarative-postgres-backrest/tests/reconciled-config.yaml"
 restore_config_file="$repository_root/declarative-postgres-backrest/tests/restore-config.yaml"
 invalid_config_file="$repository_root/declarative-postgres-backrest/tests/invalid-owner-config.yaml"
+invalid_pgbackrest_config_file="$repository_root/declarative-postgres-backrest/tests/invalid-pgbackrest-config.yaml"
+reconciliation_failure_config_file="$repository_root/declarative-postgres-backrest/tests/reconciliation-failure-config.yaml"
+postgres_user_file="$repository_root/declarative-postgres-backrest/tests/postgres-user.txt"
 suffix="$(date +%s)"
 network="declarative-postgres-backrest-test-${suffix}"
 backup_minio="declarative-postgres-backrest-backup-minio-${suffix}"
@@ -14,12 +17,15 @@ restore_minio="declarative-postgres-backrest-restore-minio-${suffix}"
 primary="declarative-postgres-backrest-primary-${suffix}"
 restore="declarative-postgres-backrest-restore-${suffix}"
 invalid="declarative-postgres-backrest-invalid-${suffix}"
+invalid_pgbackrest="declarative-postgres-backrest-invalid-pgbackrest-${suffix}"
+reconciliation_failure="declarative-postgres-backrest-reconciliation-failure-${suffix}"
+file_user="declarative-postgres-backrest-file-user-${suffix}"
 primary_volume="declarative-postgres-backrest-primary-data-${suffix}"
 restore_volume="declarative-postgres-backrest-restore-data-${suffix}"
 mc_volume="declarative-postgres-backrest-mc-${suffix}"
 
 cleanup() {
-	docker rm -f "$invalid" "$restore" "$primary" "$backup_minio" "$restore_minio" >/dev/null 2>&1 || true
+	docker rm -fv "$file_user" "$reconciliation_failure" "$invalid_pgbackrest" "$invalid" "$restore" "$primary" "$backup_minio" "$restore_minio" >/dev/null 2>&1 || true
     docker volume rm "$primary_volume" "$restore_volume" "$mc_volume" >/dev/null 2>&1 || true
     docker network rm "$network" >/dev/null 2>&1 || true
 }
@@ -54,15 +60,41 @@ wait_for() {
     return 1
 }
 
+container_stopped() {
+    test "$(docker inspect -f '{{.State.Running}}' "$1")" = false
+}
+
 docker network create "$network" >/dev/null
 docker volume create "$primary_volume" >/dev/null
 docker volume create "$restore_volume" >/dev/null
 docker volume create "$mc_volume" >/dev/null
 
 docker run -d --name "$invalid" --volume "$invalid_config_file":/etc/postgres-supervisor/config.yaml:ro "$image" >/dev/null
+wait_for invalid-config-exit container_stopped "$invalid"
 invalid_exit_code="$(docker wait "$invalid")"
 test "$invalid_exit_code" -ne 0
 docker logs "$invalid" | grep -q 'cannot manage grants on schema'
+
+docker run -d --name "$invalid_pgbackrest" --volume "$invalid_pgbackrest_config_file":/etc/postgres-supervisor/config.yaml:ro "$image" >/dev/null
+wait_for invalid-pgbackrest-config-exit container_stopped "$invalid_pgbackrest"
+invalid_pgbackrest_exit_code="$(docker wait "$invalid_pgbackrest")"
+test "$invalid_pgbackrest_exit_code" -ne 0
+docker logs "$invalid_pgbackrest" | grep -q 'pgbackrest.s3.host must be set'
+
+docker run -d --name "$reconciliation_failure" --tmpfs /var/lib/postgresql \
+    --volume "$reconciliation_failure_config_file":/etc/postgres-supervisor/config.yaml:ro "$image" >/dev/null
+wait_for reconciliation-failure-exit container_stopped "$reconciliation_failure"
+reconciliation_failure_exit_code="$(docker wait "$reconciliation_failure")"
+test "$reconciliation_failure_exit_code" -ne 0
+docker logs "$reconciliation_failure" | grep -q 'PostgreSQL reconciliation failed'
+
+docker run -d --name "$file_user" --tmpfs /var/lib/postgresql \
+    -e POSTGRES_USER_FILE=/run/secrets/postgres-user -e POSTGRES_PASSWORD=integration-password \
+    --volume "$postgres_user_file":/run/secrets/postgres-user:ro "$image" >/dev/null
+wait_for file-user-supervisor-ready docker exec "$file_user" postgres-supervisor healthcheck
+docker exec "$file_user" psql -U file_admin -d file_admin -tAc 'select 1' | grep -qx 1
+docker stop "$file_user" >/dev/null
+test "$(docker inspect -f '{{.State.ExitCode}}' "$file_user")" -eq 0
 
 docker run -d --name "$backup_minio" --network "$network" --network-alias declarative-postgres-backrest-backup-minio \
     -e MINIO_ROOT_USER=integration-key \
@@ -94,7 +126,7 @@ backup_env=(
 
 docker run -d --name "$primary" --network "$network" --volume "$primary_volume":/var/lib/postgresql \
     --volume "$config_file":/etc/postgres-supervisor/config.yaml:ro \
-    "${backup_env[@]}" "$image" >/dev/null
+    "${backup_env[@]}" "$image" -p 5433 >/dev/null
 
 if ! wait_for primary-ready docker exec "$primary" pg_isready -q -U integration_admin -d app; then
     docker logs "$primary"
@@ -117,6 +149,7 @@ must_fail psql_as reader_one reader-one-password -c "create table app.denied (id
 psql_as app_writer writer-password -c "insert into app.records values (2, 'written'); update app.records set value = 'updated' where id = 2; delete from app.records where id = 2;" >/dev/null
 
 docker stop "$primary" >/dev/null
+test "$(docker inspect -f '{{.State.ExitCode}}' "$primary")" -eq 0
 docker rm "$primary" >/dev/null
 rotated_backup_env=(
     -e INTEGRATION_POSTGRES_PASSWORD=rotated-postgres-password
@@ -161,6 +194,7 @@ must_fail psql_as reader_one rotated-reader-one-password -tAc 'select value from
 
 docker exec "$primary" gosu postgres pgbackrest --stanza=integration --type=diff backup >/dev/null
 docker stop "$primary" >/dev/null
+test "$(docker inspect -f '{{.State.ExitCode}}' "$primary")" -eq 0
 docker rm "$primary" >/dev/null
 docker run --rm --network "$network" --volume "$mc_volume":/root/.mc \
     minio/mc:RELEASE.2025-04-16T18-13-26Z mirror backup/postgres-backups restore/postgres-backups >/dev/null

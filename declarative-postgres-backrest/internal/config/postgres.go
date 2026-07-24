@@ -19,6 +19,9 @@ type RuntimeOptions struct {
 var settingName = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_.-]*$`)
 
 func WritePostgresFiles(cfg Config, options RuntimeOptions) error {
+	if err := validatePostgresSettings(cfg.Settings); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(options.ConfigDirectory, 0755); err != nil {
 		return fmt.Errorf("create config directory: %w", err)
 	}
@@ -55,13 +58,6 @@ func WritePostgresFiles(cfg Config, options RuntimeOptions) error {
 
 	keys := make([]string, 0, len(cfg.Settings))
 	for key := range cfg.Settings {
-		if !settingName.MatchString(key) {
-			return fmt.Errorf("invalid PostgreSQL setting name %q", key)
-		}
-		switch key {
-		case "data_directory", "hba_file", "ident_file", "config_file", "logging_collector", "log_destination":
-			return fmt.Errorf("PostgreSQL setting %q is managed by the supervisor", key)
-		}
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
@@ -82,6 +78,25 @@ func WritePostgresFiles(cfg Config, options RuntimeOptions) error {
 	}
 	if err := os.WriteFile(postgresPath, []byte(strings.Join(lines, "\n")+"\n"), 0644); err != nil {
 		return fmt.Errorf("write postgresql.conf: %w", err)
+	}
+	return nil
+}
+
+func validatePostgresSettings(settings map[string]MaybeEnv) error {
+	seen := make(map[string]string, len(settings))
+	for key := range settings {
+		if !settingName.MatchString(key) {
+			return fmt.Errorf("invalid PostgreSQL setting name %q", key)
+		}
+		normalized := strings.ToLower(key)
+		if previous, exists := seen[normalized]; exists {
+			return fmt.Errorf("PostgreSQL settings %q and %q differ only by case", previous, key)
+		}
+		seen[normalized] = key
+		switch normalized {
+		case "data_directory", "hba_file", "ident_file", "config_file", "listen_addresses", "port", "unix_socket_directories", "logging_collector", "log_destination", "archive_mode", "archive_command", "archive_library", "archive_timeout":
+			return fmt.Errorf("PostgreSQL setting %q is managed by the supervisor", key)
+		}
 	}
 	return nil
 }

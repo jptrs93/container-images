@@ -1,7 +1,7 @@
 settings:
   max_connections: 100
 hba:
-  - host all all 10.0.0.0/8 scram-sha-256
+  - host all all all scram-sha-256
 initdb:
   postgres_user: ${POSTGRES_USER}
   postgres_password: ${POSTGRES_PASSWORD}
@@ -33,16 +33,6 @@ pgbackrest:
 roles:
   - name: app_user
     password: ${APP_DATABASE_PASSWORD}
-    permissions:
-      - database: radkit
-        grants:
-          - CREATE
-          - USAGE
-        table_grants:
-          - SELECT
-          - INSERT
-          - UPDATE
-          - DELETE
 databases:
   - name: radkit
     owner: app_user

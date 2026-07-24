@@ -22,6 +22,11 @@ If no configuration file is mounted, the normal official `postgres` initializati
 If you want the minimal possible setup with a single super user and database:
 
 ```yaml
+settings:
+  max_connections: 100
+  shared_buffers: 256MB
+hba:
+  - host all all 10.0.0.0/8 scram-sha-256
 initdb:
   postgres_user: app_admin
   postgres_password: ${POSTGRES_PASSWORD}
@@ -122,6 +127,16 @@ databases:
     extensions:
       - pgcrypto
 ```
+
+## Lifecycle
+
+- The container entrypoint is a supervisor process.
+- The supervisor first parses and validates the configuration, generates the PostgreSQL configuration files, and then starts the main PostgreSQL process. If the configuration is invalid, the container crashes.
+- If the main PostgreSQL process dies at any point, the supervisor propagates its failure and the container crashes.
+- Once the PostgreSQL instance is running, the supervisor runs the reconciler to reconcile users and roles, permissions, and other declared database state. If reconciliation fails, the container crashes.
+- After successful reconciliation, the readiness signal is given.
+- When pgBackRest is enabled, PostgreSQL invokes it to archive live WAL segments, and the supervisor invokes it periodically for full and differential backups.
+- pgBackRest failures and errors do not crash the container, but the container is marked unhealthy and the errors appear in its logs.
 
 `pgbackrest.stanza`, `pgbackrest.s3.host`, and `pgbackrest.s3.bucket` are required when enabled. `s3.port` defaults to `443`; use `9000` and `verify_tls: false` only for a trusted HTTP MinIO endpoint. Other omitted pgBackRest values use the defaults in [`config.example.yaml`](config.example.yaml).
 

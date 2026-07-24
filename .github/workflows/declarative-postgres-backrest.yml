@@ -3,7 +3,7 @@ name: Build declarative-postgres-backrest
 on:
   push:
     tags:
-      - '*_*_v*'
+      - '18.4_2.58.0_v*'
 
 env:
   IMAGE_NAME: ghcr.io/jptrs93/declarative-postgres-backrest

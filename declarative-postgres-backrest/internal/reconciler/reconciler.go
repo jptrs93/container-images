@@ -12,10 +12,10 @@ import (
 	"github.com/jptrs93/container-images/declarative-postgres-backrest/internal/config"
 )
 
-func Reconcile(ctx context.Context, cfg config.Config, initDB *config.InitDBOptions) error {
+func Reconcile(ctx context.Context, cfg config.Config, initDB *config.InitDBOptions, supervisorUser string) error {
 	adminURL := os.Getenv("POSTGRES_SUPERVISOR_ADMIN_URL")
 	if adminURL == "" {
-		adminURL = socketURL(adminUser(initDB), "postgres")
+		adminURL = socketURL(supervisorUser, "postgres")
 	}
 
 	admin, err := pgx.Connect(ctx, adminURL)
@@ -268,26 +268,14 @@ func schemaOwner(ctx context.Context, conn *pgx.Conn, database, schema string) (
 
 func socketURL(user, database string) string {
 	if user == "" {
-		user = adminUser(nil)
+		user = "postgres"
 	}
 	url := &url.URL{Scheme: "postgres", User: url.User(user), Path: "/" + database}
 	query := url.Query()
 	query.Set("host", "/var/run/postgresql")
+	query.Set("port", "5432")
 	url.RawQuery = query.Encode()
 	return url.String()
-}
-
-func adminUser(initDB *config.InitDBOptions) string {
-	if user := os.Getenv("POSTGRES_SUPERVISOR_ADMIN_USER"); user != "" {
-		return user
-	}
-	if initDB != nil {
-		return initDB.PostgresUser
-	}
-	if user := os.Getenv("POSTGRES_USER"); user != "" {
-		return user
-	}
-	return "postgres"
 }
 
 func databaseURL(adminURL, database string) string {

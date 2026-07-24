@@ -1,0 +1,15 @@
+services:
+  postgres:
+    image: ghcr.io/jptrs93/declaritive-postgres:${IMAGE_TAG:-18.4_v1}
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - postgres-data:/var/lib/postgresql
+      - ../../config.example.yaml:/etc/postgres-supervisor/config.yaml:ro
+    ports:
+      - '5432:5432'
+      - '8081:8081'
+    shm_size: 256mb
+
+volumes:
+  postgres-data:

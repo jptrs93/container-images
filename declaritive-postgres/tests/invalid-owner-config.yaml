@@ -1,0 +1,12 @@
+roles:
+  - name: app_owner
+    permissions:
+      - database: app
+        schema: app
+        grants:
+          - USAGE
+databases:
+  - name: app
+    owner: app_owner
+    schemas:
+      - app
