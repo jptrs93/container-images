@@ -58,6 +58,7 @@ func run() error {
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("validate config: %w", err)
 	}
+	connection := cfg.ConnectionOptions()
 	var initDB *config.InitDBOptions
 	if cfg.InitDB != nil {
 		options, err := cfg.InitDB.Resolve()
@@ -81,7 +82,7 @@ func run() error {
 		} else {
 			options, err := cfg.PGBackRest.Resolve()
 			if err == nil {
-				manager, err = backup.New(pgData, adminUser, options)
+				manager, err = backup.New(pgData, adminUser, connection, options)
 			}
 			backupErr = err
 		}
@@ -125,7 +126,7 @@ func run() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	server, err := startHealthServer(func() error {
-		return healthcheck(adminUser, manager, backupEnabled)
+		return healthcheck(connection, adminUser, manager, backupEnabled)
 	})
 	if err != nil {
 		return err
@@ -134,9 +135,9 @@ func run() error {
 
 	commandArgs := append(arguments,
 		"-c", "config_file=/etc/postgres-supervisor/postgresql.conf",
-		"-c", "listen_addresses=*",
-		"-c", "port=5432",
-		"-c", "unix_socket_directories=/var/run/postgresql",
+		"-c", "listen_addresses="+connection.ListenAddresses,
+		"-c", "port="+connection.Port,
+		"-c", "unix_socket_directories="+connection.SocketDirectories,
 	)
 	if backupEnabled {
 		commandArgs = append(commandArgs,
@@ -157,7 +158,7 @@ func run() error {
 	command.Stdout = os.Stdout
 	command.Stderr = os.Stdout
 	command.Stdin = os.Stdin
-	command.Env = postgresEnv(cfg, initDB)
+	command.Env = postgresChildEnv(cfg, initDB, connection)
 	signals := make(chan os.Signal, 2)
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(signals)
@@ -172,7 +173,7 @@ func run() error {
 
 	reconciliationFailed := make(chan error, 1)
 	go func() {
-		if err := reconcileAndBackup(ctx, cfg, initDB, adminUser, manager, backupEnabled); err != nil && ctx.Err() == nil {
+		if err := reconcileAndBackup(ctx, cfg, initDB, connection, adminUser, manager, backupEnabled); err != nil && ctx.Err() == nil {
 			reconciliationFailed <- err
 		}
 	}()
@@ -216,11 +217,11 @@ func run() error {
 	}
 }
 
-func reconcileAndBackup(ctx context.Context, cfg config.Config, initDB *config.InitDBOptions, adminUser string, manager *backup.Manager, backupEnabled bool) error {
-	if err := waitForPostgres(ctx, adminUser); err != nil {
+func reconcileAndBackup(ctx context.Context, cfg config.Config, initDB *config.InitDBOptions, connection config.ConnectionOptions, adminUser string, manager *backup.Manager, backupEnabled bool) error {
+	if err := waitForPostgres(ctx, connection, adminUser); err != nil {
 		return err
 	}
-	if err := reconciler.Reconcile(ctx, cfg, initDB, adminUser); err != nil {
+	if err := reconciler.Reconcile(ctx, cfg, initDB, connection, adminUser); err != nil {
 		return err
 	}
 	if err := status.Write(supervisorStatePath, "healthy"); err != nil {
@@ -232,10 +233,11 @@ func reconcileAndBackup(ctx context.Context, cfg config.Config, initDB *config.I
 	return nil
 }
 
-func waitForPostgres(ctx context.Context, user string) error {
+func waitForPostgres(ctx context.Context, connection config.ConnectionOptions, user string) error {
 	for {
-		command := exec.CommandContext(ctx, "pg_isready", "-q", "-h", "/var/run/postgresql", "-p", "5432", "-U", user, "-d", "postgres")
-		if command.Run() == nil {
+		command := exec.CommandContext(ctx, "psql", "-qAt", "-h", connection.SocketDirectory, "-p", connection.Port, "-U", user, "-d", "postgres", "-c", "select not pg_is_in_recovery()")
+		output, err := command.Output()
+		if err == nil && strings.TrimSpace(string(output)) == "t" {
 			return nil
 		}
 		if !sleep(ctx, time.Second) {
@@ -278,8 +280,8 @@ func shutdownHealthServer(server *http.Server) {
 	_ = server.Shutdown(ctx)
 }
 
-func healthcheck(adminUser string, manager *backup.Manager, backupEnabled bool) error {
-	if err := exec.Command("pg_isready", "-q", "-h", "/var/run/postgresql", "-p", "5432", "-U", adminUser, "-d", "postgres").Run(); err != nil {
+func healthcheck(connection config.ConnectionOptions, adminUser string, manager *backup.Manager, backupEnabled bool) error {
+	if err := exec.Command("pg_isready", "-q", "-h", connection.SocketDirectory, "-p", connection.Port, "-U", adminUser, "-d", "postgres").Run(); err != nil {
 		return errors.New("PostgreSQL is not ready")
 	}
 	if !status.Healthy(supervisorStatePath) {
@@ -400,6 +402,15 @@ func postgresEnv(cfg config.Config, initDB *config.InitDBOptions) []string {
 		)
 	}
 	return values
+}
+
+func postgresChildEnv(cfg config.Config, initDB *config.InitDBOptions, connection config.ConnectionOptions) []string {
+	return append(postgresEnv(cfg, initDB),
+		"PGHOST="+connection.SocketDirectory,
+		"PGPORT="+connection.Port,
+		"PGSERVICE=postgres-supervisor",
+		"PGSERVICEFILE=/etc/postgres-supervisor/pg_service.conf",
+	)
 }
 
 func isOfficialPostgresEnvironment(name string) bool {

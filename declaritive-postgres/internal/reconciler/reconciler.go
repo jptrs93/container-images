@@ -12,10 +12,10 @@ import (
 	"github.com/jptrs93/container-images/declaritive-postgres/internal/config"
 )
 
-func Reconcile(ctx context.Context, cfg config.Config, initDB *config.InitDBOptions, supervisorUser string) error {
+func Reconcile(ctx context.Context, cfg config.Config, initDB *config.InitDBOptions, connection config.ConnectionOptions, supervisorUser string) error {
 	adminURL := os.Getenv("POSTGRES_SUPERVISOR_ADMIN_URL")
 	if adminURL == "" {
-		adminURL = socketURL(supervisorUser, "postgres")
+		adminURL = socketURL(supervisorUser, "postgres", connection)
 	}
 
 	admin, err := pgx.Connect(ctx, adminURL)
@@ -266,14 +266,14 @@ func schemaOwner(ctx context.Context, conn *pgx.Conn, database, schema string) (
 	return owner, nil
 }
 
-func socketURL(user, database string) string {
+func socketURL(user, database string, connection config.ConnectionOptions) string {
 	if user == "" {
 		user = "postgres"
 	}
 	url := &url.URL{Scheme: "postgres", User: url.User(user), Path: "/" + database}
 	query := url.Query()
-	query.Set("host", "/var/run/postgresql")
-	query.Set("port", "5432")
+	query.Set("host", connection.SocketDirectory)
+	query.Set("port", connection.Port)
 	url.RawQuery = query.Encode()
 	return url.String()
 }
