@@ -1,14 +1,23 @@
 # declaritive-postgres
 
-`ghcr.io/jptrs93/declaritive-postgres` packages PostgreSQL 18.4 with declarative initialization and reconciliation. Its only image tag matches its Git tag, for example `18.4_v1`.
+`ghcr.io/jptrs93/declaritive-postgres` packages PostgreSQL into a self-contained image that is configured via a single declarative YAML file. The configuration file is reconciled against the database on each startup. In addition to standard static PostgreSQL configuration, the YAML file lets you declaratively define databases, roles/users, credentials, permissions, extensions, and more. At any time, you can change the configuration file and the database state will be reconciled to match on the next restart. This approach aligns cleanly with modern deployment orchestration platforms. For example, you can rotate a password or audit which users and credentials exist without executing SQL commands within the instance itself.
 
-Mount persistent storage at `/var/lib/postgresql` and YAML at `POSTGRES_SUPERVISOR_CONFIG` (default: `/etc/postgres-supervisor/config.yaml`). The image is `linux/amd64` only. [`examples/compose/`](examples/compose/) is a local smoke-test deployment.
+Release Git tags use `declaritive-postgres/<postgres version>_<this version>`, for example `declaritive-postgres/18.4_v1`. The directory prefix is removed from the published container tag, producing `18.4_v1`.
 
-## Configuration
+## Usage
+
+To run the image you need to:
+
+* Mount persistent storage at the container path `/var/lib/postgresql` (standard for PostgreSQL >= 18).
+* Mount the declarative YAML configuration file at `/etc/postgres-supervisor/config.yaml`. To load the configuration from another path, set `POSTGRES_SUPERVISOR_CONFIG`.
+
+The image is `linux/amd64` only. [`examples/compose/`](examples/compose/) provides a local smoke-test deployment.
 
 YAML is strict: unknown fields fail startup. A string exactly equal to `${ENV_NAME}` is replaced once with the non-empty environment value. Use your orchestrator's secret support for those variables.
 
 If no configuration file is mounted, the normal official `postgres` initialization variables apply. Declaring `initdb` requires `postgres_password`; its password is reconciled on every startup. `postgres_user` and `postgres_db` only affect an empty volume.
+
+## Examples
 
 ### Minimal postgres only
 
