@@ -2,7 +2,7 @@
 
 `ghcr.io/jptrs93/declarative-postgres-backrest` packages PostgreSQL and [pgBackRest](https://pgbackrest.org/) for S3 backups into a self contained image that is configured via a single declaritive yaml file. The configuration file is reconciled against the database on each start up. In addition to standard static postgres configuration, the yaml file lets you declaritively define databases, roles/ users, credentials, permissions, extensions etc..  At any time you can change the config file and the database state will be reconciled to match on next restart. This approach aligns more cleanly with modern deployment orchestration platforms. For example, you can rotate a password or audit what users and credentials exist without executing SQL commands within the instance itself. 
 
-Images are tagged as `<postgres version>_<backrest version>_<this version>`, for example `18.4_2.58.0_v1`.
+Release Git tags use `declarative-postgres-backrest/<postgres version>_<backrest version>_<this version>`, for example `declarative-postgres-backrest/18.4_2.58.0_v1`. The directory prefix is removed from the published container tag, producing `18.4_2.58.0_v1`.
 
 ## Usage
 

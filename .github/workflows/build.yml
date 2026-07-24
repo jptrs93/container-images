@@ -1,0 +1,78 @@
+name: Build container image
+
+on:
+  push:
+    tags:
+      - 'declarative-postgres-backrest/18.4_2.58.0_v*'
+      - 'declaritive-postgres/18.4_v*'
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - name: Select image from tag
+        id: image
+        shell: bash
+        run: |
+          case "$GITHUB_REF_NAME" in
+            declarative-postgres-backrest/*)
+              directory=declarative-postgres-backrest
+              image_name=ghcr.io/jptrs93/declarative-postgres-backrest
+              ;;
+            declaritive-postgres/*)
+              directory=declaritive-postgres
+              image_name=ghcr.io/jptrs93/declaritive-postgres
+              ;;
+            *)
+              echo "Unsupported image tag: $GITHUB_REF_NAME" >&2
+              exit 1
+              ;;
+          esac
+          {
+            echo "directory=$directory"
+            echo "image_name=$image_name"
+            echo "version=${GITHUB_REF_NAME#*/}"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-go@v6.0.0
+        with:
+          go-version-file: ${{ steps.image.outputs.directory }}/go.mod
+
+      - name: Test Go packages
+        run: go test ./...
+        working-directory: ${{ steps.image.outputs.directory }}
+
+      - name: Build image
+        env:
+          DIRECTORY: ${{ steps.image.outputs.directory }}
+          IMAGE_NAME: ${{ steps.image.outputs.image_name }}
+          VERSION: ${{ steps.image.outputs.version }}
+        run: |
+          docker build --platform linux/amd64 -f "$DIRECTORY/Dockerfile" \
+            -t "$IMAGE_NAME:$VERSION" \
+            -t "$IMAGE_NAME:test" \
+            .
+
+      - name: Run integration test
+        env:
+          DIRECTORY: ${{ steps.image.outputs.directory }}
+          IMAGE_NAME: ${{ steps.image.outputs.image_name }}
+        run: |
+          "$DIRECTORY/tests/integration.sh" "$IMAGE_NAME:test"
+
+      - uses: docker/login-action@v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish image
+        env:
+          IMAGE_NAME: ${{ steps.image.outputs.image_name }}
+          VERSION: ${{ steps.image.outputs.version }}
+        run: docker push "$IMAGE_NAME:$VERSION"
