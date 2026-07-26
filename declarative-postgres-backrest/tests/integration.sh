@@ -121,6 +121,7 @@ backup_env=(
     -e INTEGRATION_READER_TWO_PASSWORD=reader-two-password
     -e INTEGRATION_WRITER_PASSWORD=writer-password
     -e INTEGRATION_GROUP_READER_PASSWORD=group-reader-password
+    -e INTEGRATION_BUILDER_PASSWORD=builder-password
     -e INTEGRATION_S3_ACCESS_KEY=integration-key
     -e INTEGRATION_S3_SECRET_KEY=integration-secret
 )
@@ -160,6 +161,25 @@ psql_as app_writer writer-password -c "insert into app.serial_records (value) va
 psql_as reader_one reader-one-password -tAc 'select value from app.serial_records where id = 1' | grep -qx sequenced
 must_fail psql_as reader_one reader-one-password -c "insert into app.serial_records (value) values ('denied')"
 
+# Default privileges are creator-scoped in PostgreSQL, so a grant is only truly
+# declarative if every role able to create objects carries one. The schema is
+# owned by app_owner, yet tables created afterwards by the superuser and by
+# app_builder must still land in reader_one's grant.
+docker exec "$primary" psql -U integration_admin -d app -c "create table app.admin_created (id integer primary key, value text not null); insert into app.admin_created values (1, 'by-admin');" >/dev/null
+psql_as reader_one reader-one-password -tAc 'select value from app.admin_created where id = 1' | grep -qx by-admin
+psql_as app_builder builder-password -c "create table app.builder_created (id integer primary key, value text not null); insert into app.builder_created values (1, 'by-builder');" >/dev/null
+psql_as reader_one reader-one-password -tAc 'select value from app.builder_created where id = 1' | grep -qx by-builder
+
+# Routine grants reach functions created after reconciliation. EXECUTE is taken
+# from PUBLIC so the assertion tests reader_one's own grant, not the default.
+psql_as app_owner owner-password -c "create function app.answer() returns integer language sql as 'select 42'; revoke execute on function app.answer() from public;" >/dev/null
+psql_as reader_one reader-one-password -tAc 'select app.answer()' | grep -qx 42
+must_fail psql_as reader_two reader-two-password -tAc 'select app.answer()'
+
+# Extension functions keep the PostgreSQL default rather than being rewritten
+# with explicit grants by the revoke pass.
+docker exec "$primary" psql -U integration_admin -d app -tAc "select count(proacl) from pg_proc join pg_namespace on pg_namespace.oid = pg_proc.pronamespace where nspname = 'public'" | grep -qx 0
+
 docker exec "$primary" psql -U integration_admin -d app -tAc "select pg_get_userbyid(datdba) from pg_database where datname = 'app'" | grep -qx app_owner
 docker exec "$primary" psql -U integration_admin -d app -c 'alter database app owner to integration_admin' >/dev/null
 docker exec "$primary" psql -U integration_admin -d app -c 'alter schema app owner to integration_admin' >/dev/null
@@ -174,6 +194,7 @@ rotated_backup_env=(
     -e INTEGRATION_READER_TWO_PASSWORD=reader-two-password
     -e INTEGRATION_WRITER_PASSWORD=rotated-writer-password
     -e INTEGRATION_GROUP_READER_PASSWORD=group-reader-password
+    -e INTEGRATION_BUILDER_PASSWORD=builder-password
     -e INTEGRATION_AUDIT_READER_PASSWORD=audit-reader-password
     -e INTEGRATION_S3_ACCESS_KEY=integration-key
     -e INTEGRATION_S3_SECRET_KEY=integration-secret
@@ -214,6 +235,19 @@ psql_as audit_reader audit-reader-password -tAc 'select value from app.records w
 psql_as app_owner owner-password -c "create table app.reconciled_records (id integer primary key, value text not null); insert into app.reconciled_records values (1, 'reconciled');" >/dev/null
 psql_as audit_reader audit-reader-password -tAc 'select value from app.reconciled_records where id = 1' | grep -qx reconciled
 must_fail psql_as reader_one rotated-reader-one-password -tAc 'select value from app.reconciled_records where id = 1'
+
+# app_builder keeps USAGE but loses CREATE, so it stops being a creator and the
+# default privilege entries naming it must be cleaned up.
+docker exec "$primary" psql -U integration_admin -d app -tAc "select count(*) from pg_default_acl join pg_roles on pg_roles.oid = pg_default_acl.defaclrole where rolname = 'app_builder'" | grep -qx 0
+must_fail psql_as app_builder builder-password -c "create table app.denied_after_reconcile (id integer)"
+
+# A table created by the superuser after reconciliation is still covered by
+# audit_reader's grant, which is the creator-scoped case that motivated this.
+docker exec "$primary" psql -U integration_admin -d app -c "create table app.admin_created_two (id integer primary key, value text not null); insert into app.admin_created_two values (1, 'admin-two');" >/dev/null
+psql_as audit_reader audit-reader-password -tAc 'select value from app.admin_created_two where id = 1' | grep -qx admin-two
+
+# reader_one has no permissions left, so the routine grant is gone too.
+must_fail psql_as reader_one rotated-reader-one-password -tAc 'select app.answer()'
 
 docker exec "$primary" gosu postgres pgbackrest --stanza=integration --type=diff backup >/dev/null
 docker stop "$primary" >/dev/null

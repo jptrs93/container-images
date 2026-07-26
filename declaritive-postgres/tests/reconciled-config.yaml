@@ -34,6 +34,8 @@ roles:
           - SELECT
           - INSERT
           - UPDATE
+        sequence_grants:
+          - USAGE
   - name: audit_reader
     password: ${INTEGRATION_AUDIT_READER_PASSWORD}
     permissions:
@@ -45,6 +47,13 @@ roles:
           - SELECT
   - name: group_reader
     password: ${INTEGRATION_GROUP_READER_PASSWORD}
+  - name: app_builder
+    password: ${INTEGRATION_BUILDER_PASSWORD}
+    permissions:
+      - database: app
+        schema: app
+        grants:
+          - USAGE
 databases:
   - name: app
     owner: app_owner

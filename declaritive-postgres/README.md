@@ -92,11 +92,28 @@ The supervisor creates missing roles, databases, schemas, and extensions. Declar
 
 `owner` is optional and defaults to the bootstrap superuser, which is `initdb.postgres_user` when declared and otherwise `POSTGRES_USER` or `postgres`. It is reconciled on every startup, not only at creation: a database or declared schema whose owner has drifted from the YAML is handed back to the declared role. Changing `owner` does not transfer ownership of tables, sequences, or other objects already inside the database, which stay with their original owner. Use `REASSIGN OWNED BY <old> TO <new>` to move those.
 
-`grants` accepts `CREATE` and `USAGE`, the complete set of PostgreSQL schema privileges. `table_grants` accepts `SELECT`, `INSERT`, `UPDATE`, `DELETE`, `TRUNCATE`, `REFERENCES`, `TRIGGER`, and `MAINTAIN`. Either list also accepts the single value `ALL`, which cannot be combined with named privileges. They are reconciled for the configured role. An omitted `schema` applies to every non-system schema in the database. A configured role cannot manage grants on a schema it owns.
+Grants mirror the PostgreSQL object classes one for one, so the YAML says exactly what the database is told:
 
-Sequence privileges are not declared directly, they follow from `table_grants`. `INSERT` also grants `USAGE` on the schema's sequences, and `ALL` grants `ALL`, because PostgreSQL treats sequences as a separate object class: without this a role holding `INSERT` still cannot insert into a table with a `serial` column. Columns declared `generated always as identity` need no sequence privilege.
+| Field | Object class | Accepted privileges |
+| --- | --- | --- |
+| `grants` | schemas | `CREATE`, `USAGE` |
+| `table_grants` | tables, views, materialized views, partitioned tables, foreign tables | `SELECT`, `INSERT`, `UPDATE`, `DELETE`, `TRUNCATE`, `REFERENCES`, `TRIGGER`, `MAINTAIN` |
+| `sequence_grants` | sequences | `USAGE`, `SELECT`, `UPDATE` |
+| `routine_grants` | functions, procedures, aggregates | `EXECUTE` |
 
-Grants are applied to the objects that exist at reconcile time and registered as default privileges for the schema owner, so objects that owner creates later are covered without a restart. Objects created by any other role are covered at the next reconcile.
+Every list also accepts the single value `ALL`, which cannot be combined with named privileges. An omitted `schema` applies to every non-system schema in the database. A configured role cannot manage grants on a schema it owns.
+
+Each class is declared outright and none is inferred from another. In particular a role that inserts into a table with a `serial` column needs `sequence_grants: [USAGE]` as well as `table_grants: [INSERT]`, because PostgreSQL checks the sequence separately. Columns declared `generated always as identity` need no sequence privilege.
+
+### Grants cover existing and future objects alike
+
+A grant means the same thing whenever it is applied relative to the objects it covers. There is no separate notion of a default privilege in this configuration: `table_grants: [SELECT]` covers the tables that exist now and the tables created tomorrow, and removing it revokes both.
+
+PostgreSQL itself does not work that way. `ALTER DEFAULT PRIVILEGES` is scoped to the role that creates an object, so a default privilege registered for one role does nothing about objects another role creates. The reconciler closes that gap by treating the YAML as the whole truth: on every startup it asks the catalog which roles can create objects in each schema, using `has_schema_privilege`, which accounts for the schema owner, superusers, roles granted `CREATE` outright, and roles that inherit `CREATE` through `member_of`. Each grant is then registered against every one of those roles.
+
+Two consequences follow. Grants apply regardless of who creates an object, including the bootstrap superuser, so the common pattern of letting the superuser own every table while an application role holds `ALL` works without further configuration. And the creator set is re-read before anything is revoked, so when a role loses `CREATE`, or leaves the configuration entirely, the default privileges registered for it are cleaned up rather than left behind.
+
+Roles that can create objects outside the configuration are the one thing this cannot account for. A role granted `CREATE` by hand becomes a creator that the next reconcile will discover and include, but objects it creates before then are covered only from that reconcile onward.
 
 The supervisor always adds `local all all trust` for its local reconciliation connection. If `hba` is omitted, it also permits remote `scram-sha-256` access. PostgreSQL and supervisor logs go to container stdout.
 

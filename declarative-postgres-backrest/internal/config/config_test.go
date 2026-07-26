@@ -207,9 +207,20 @@ func TestValidateRejectsGrantsForSchemaOwner(t *testing.T) {
 
 func TestPermissionValidateAcceptsExpandedGrants(t *testing.T) {
 	permission := Permission{
-		Database:    "app",
-		Grants:      []string{"CREATE", "USAGE"},
-		TableGrants: []string{"SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER", "MAINTAIN"},
+		Database:       "app",
+		Grants:         []string{"CREATE", "USAGE"},
+		TableGrants:    []string{"SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER", "MAINTAIN"},
+		SequenceGrants: []string{"USAGE", "SELECT", "UPDATE"},
+		RoutineGrants:  []string{"EXECUTE"},
+	}
+	if err := (Permission{Database: "app", SequenceGrants: []string{"USAGE"}}).Validate(); err != nil {
+		t.Fatalf("Validate() with only sequence grants error = %v", err)
+	}
+	if err := (Permission{Database: "app", RoutineGrants: []string{"EXECUTE"}}).Validate(); err != nil {
+		t.Fatalf("Validate() with only routine grants error = %v", err)
+	}
+	if err := (Permission{Database: "app", RoutineGrants: []string{"ALL"}}).Validate(); err != nil {
+		t.Fatalf("Validate() with routine ALL error = %v", err)
 	}
 	if err := permission.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v", err)
@@ -229,12 +240,15 @@ func TestPermissionValidateRejectsBadGrants(t *testing.T) {
 		permission Permission
 		want       string
 	}{
-		"unknown table grant":   {Permission{Database: "app", TableGrants: []string{"SELECT", "DROP"}}, `unsupported table grant "DROP"`},
-		"unknown schema grant":  {Permission{Database: "app", Grants: []string{"SELECT"}}, `unsupported schema grant "SELECT"`},
-		"table ALL combined":    {Permission{Database: "app", TableGrants: []string{"ALL", "SELECT"}}, "table grant ALL cannot be combined"},
-		"schema ALL combined":   {Permission{Database: "app", Grants: []string{"ALL", "USAGE"}}, "schema grant ALL cannot be combined"},
-		"duplicate table grant": {Permission{Database: "app", TableGrants: []string{"SELECT", "SELECT"}}, `table grant "SELECT" is declared more than once`},
-		"lowercase grant":       {Permission{Database: "app", TableGrants: []string{"select"}}, `unsupported table grant "select"`},
+		"unknown table grant":    {Permission{Database: "app", TableGrants: []string{"SELECT", "DROP"}}, `unsupported table grant "DROP"`},
+		"unknown schema grant":   {Permission{Database: "app", Grants: []string{"SELECT"}}, `unsupported schema grant "SELECT"`},
+		"table ALL combined":     {Permission{Database: "app", TableGrants: []string{"ALL", "SELECT"}}, "table grant ALL cannot be combined"},
+		"schema ALL combined":    {Permission{Database: "app", Grants: []string{"ALL", "USAGE"}}, "schema grant ALL cannot be combined"},
+		"duplicate table grant":  {Permission{Database: "app", TableGrants: []string{"SELECT", "SELECT"}}, `table grant "SELECT" is declared more than once`},
+		"lowercase grant":        {Permission{Database: "app", TableGrants: []string{"select"}}, `unsupported table grant "select"`},
+		"unknown routine grant":  {Permission{Database: "app", RoutineGrants: []string{"SELECT"}}, `unsupported routine grant "SELECT"`},
+		"routine ALL combined":   {Permission{Database: "app", RoutineGrants: []string{"ALL", "EXECUTE"}}, "routine grant ALL cannot be combined"},
+		"unknown sequence grant": {Permission{Database: "app", SequenceGrants: []string{"INSERT"}}, `unsupported sequence grant "INSERT"`},
 	} {
 		t.Run(name, func(t *testing.T) {
 			err := testCase.permission.Validate()

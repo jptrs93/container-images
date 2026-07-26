@@ -21,6 +21,8 @@ roles:
           - USAGE
         table_grants:
           - SELECT
+        routine_grants:
+          - EXECUTE
   - name: reader_two
     password: ${INTEGRATION_READER_TWO_PASSWORD}
     permissions:
@@ -42,10 +44,22 @@ roles:
           - INSERT
           - UPDATE
           - DELETE
+        sequence_grants:
+          - USAGE
   - name: group_reader
     password: ${INTEGRATION_GROUP_READER_PASSWORD}
     member_of:
       - pg_read_all_data
+  - name: app_builder
+    password: ${INTEGRATION_BUILDER_PASSWORD}
+    permissions:
+      - database: app
+        schema: app
+        grants:
+          - CREATE
+          - USAGE
+        table_grants:
+          - ALL
 databases:
   - name: app
     owner: app_owner

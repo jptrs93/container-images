@@ -37,10 +37,12 @@ type Role struct {
 }
 
 type Permission struct {
-	Database    MaybeEnv `yaml:"database"`
-	Schema      MaybeEnv `yaml:"schema"`
-	Grants      []string `yaml:"grants"`
-	TableGrants []string `yaml:"table_grants"`
+	Database       MaybeEnv `yaml:"database"`
+	Schema         MaybeEnv `yaml:"schema"`
+	Grants         []string `yaml:"grants"`
+	TableGrants    []string `yaml:"table_grants"`
+	SequenceGrants []string `yaml:"sequence_grants"`
+	RoutineGrants  []string `yaml:"routine_grants"`
 }
 
 type Database struct {
@@ -256,13 +258,18 @@ func (cfg *Config) Validate() error {
 	return nil
 }
 
-// schemaGrants and tableGrants are the privileges PostgreSQL defines for each
-// object class. Sequence privileges are not declared directly: they follow from
-// the table grants, because a role that can INSERT also needs to draw from the
-// sequences behind any serial column.
+// These are the privileges PostgreSQL defines for each object class, mirrored
+// one for one so the YAML says exactly what the database will be told. Table
+// grants cover views, materialized views, partitioned tables and foreign tables
+// too, because PostgreSQL treats them all as relations. Routine grants cover
+// functions, procedures and aggregates. Sequences are their own class: a role
+// inserting into a serial column needs USAGE on the sequence behind it, and it
+// has to ask for that outright.
 var (
-	schemaGrants = []string{"CREATE", "USAGE"}
-	tableGrants  = []string{"SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER", "MAINTAIN"}
+	schemaGrants   = []string{"CREATE", "USAGE"}
+	tableGrants    = []string{"SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER", "MAINTAIN"}
+	sequenceGrants = []string{"USAGE", "SELECT", "UPDATE"}
+	routineGrants  = []string{"EXECUTE"}
 )
 
 // validateMemberOf rejects memberships PostgreSQL would refuse at reconcile
@@ -290,13 +297,20 @@ func validateMemberOf(roleIndex int, name string, memberOf []MaybeEnv) error {
 }
 
 func (permission Permission) Validate() error {
-	if permission.Database == "" || (len(permission.Grants) == 0 && len(permission.TableGrants) == 0) {
+	if permission.Database == "" || (len(permission.Grants) == 0 && len(permission.TableGrants) == 0 &&
+		len(permission.SequenceGrants) == 0 && len(permission.RoutineGrants) == 0) {
 		return fmt.Errorf("database and at least one grant are required")
 	}
 	if err := validateGrants("schema", permission.Grants, schemaGrants); err != nil {
 		return err
 	}
-	return validateGrants("table", permission.TableGrants, tableGrants)
+	if err := validateGrants("table", permission.TableGrants, tableGrants); err != nil {
+		return err
+	}
+	if err := validateGrants("sequence", permission.SequenceGrants, sequenceGrants); err != nil {
+		return err
+	}
+	return validateGrants("routine", permission.RoutineGrants, routineGrants)
 }
 
 // validateGrants accepts any combination of the supported privileges, or the
