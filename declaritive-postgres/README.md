@@ -36,12 +36,12 @@ hba:
 initdb:
   postgres_user: app_admin
   postgres_password: ${POSTGRES_PASSWORD}
-  postgres_db: app
+  postgres_db: app_db
 ```
 
 ### Declarative application database
 
-Bootstrap the administrative `postgres` database, then let reconciliation create `app` with the non-superuser `app` as its owner:
+Bootstrap the administrative `postgres` database, then let reconciliation create `app_db` with the non-superuser `app_user` as its owner:
 
 ```yaml
 settings:
@@ -49,26 +49,26 @@ settings:
   shared_buffers: 256MB
   shared_preload_libraries: pg_stat_statements
 hba:
-  - host all app all scram-sha-256
+  - host all app_user all scram-sha-256
   - host all reader all scram-sha-256
 initdb:
   postgres_user: postgres
   postgres_password: ${POSTGRES_PASSWORD}
   postgres_db: postgres
 roles:
-  - name: app
+  - name: app_user
     password: ${APP_PASSWORD}
   - name: reader
     password: ${READER_PASSWORD}
     permissions:
-      - database: app
+      - database: app_db
         grants:
           - USAGE
         table_grants:
           - SELECT
 databases:
-  - name: app
-    owner: app
+  - name: app_db
+    owner: app_user
     schemas:
       - staging
     extensions:
@@ -96,7 +96,7 @@ roles:
   - name: app_read
     login: false
     permissions:
-      - database: app
+      - database: app_db
         schema: public
         grants:
           - USAGE
@@ -110,7 +110,7 @@ roles:
   - name: app_write
     login: false
     permissions:
-      - database: app
+      - database: app_db
         schema: public
         table_grants:
           - INSERT
@@ -132,12 +132,12 @@ roles:
       - app_read
 
 databases:
-  - name: app
+  - name: app_db
     extensions:
       - pgcrypto
 ```
 
-`app` has no `owner`, so it stays with the bootstrap superuser, which then creates the tables. That is fine here: because grants are registered against every role that can create objects, `app_read` and `app_write` cover the superuser's tables without anything further being declared.
+`app_db` has no `owner`, so it stays with the bootstrap superuser, which then creates the tables. That is fine here: because grants are registered against every role that can create objects, `app_read` and `app_write` cover the superuser's tables without anything further being declared.
 
 `app_write` deliberately omits `grants: [USAGE]` on the schema. `app_user` gets schema access through `app_read`, and revoking `app_read` from a role that still holds `app_write` should leave it unable to reach the schema at all. Give `app_write` its own `USAGE` if you intend it to stand alone.
 
@@ -152,7 +152,7 @@ roles:
   - name: full_access
     password: ${FULL_ACCESS_PASSWORD}
     permissions:
-      - database: app
+      - database: app_db
         schema: public
         grants:
           - CREATE
@@ -181,7 +181,7 @@ roles:
   - name: full_access
     password: ${FULL_ACCESS_PASSWORD}
     permissions:
-      - database: app
+      - database: app_db
         schema: public
         grants: [ALL]
         table_grants: [ALL]
@@ -196,8 +196,8 @@ roles:
   - name: analyst
     password: ${ANALYST_PASSWORD}
     permissions:
-      # Every schema in app, current and future.
-      - database: app
+      # Every schema in app_db, current and future.
+      - database: app_db
         grants: [USAGE]
         table_grants: [SELECT]
       # Write access confined to one schema of another database.
