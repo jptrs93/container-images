@@ -13,7 +13,7 @@ To run the image you need to:
 
 The image is `linux/amd64` only. [`examples/compose/`](examples/compose/) provides a local smoke-test deployment.
 
-YAML is strict: unknown fields fail startup. A string exactly equal to `${ENV_NAME}` is replaced once with the non-empty environment value. Use your orchestrator's secret support for those variables.
+YAML is strict: unknown fields fail startup. A string exactly equal to `${ENV_NAME}` is replaced once with the non-empty environment value. `${ENV_NAME:-default}` uses `default` when the variable is unset or empty. Use your orchestrator's secret support for those variables.
 
 `settings.listen_addresses`, `settings.port`, and `settings.unix_socket_directories` are optional and default to `*`, `5432`, and `/var/run/postgresql`. These YAML values override conflicting PostgreSQL command-line options. The supervisor uses the configured port and first socket directory for readiness and reconciliation. Custom socket directories must already exist and be writable by the `postgres` operating-system user; publish the configured port separately through your container runtime when remote access is required.
 

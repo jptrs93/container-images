@@ -11,7 +11,7 @@ To run the image you need to:
 * Mount persistent storage at the container path `/var/lib/postgresql` (standard for postgres > 18).
 * Mount the declarative YAML configuration file at `/etc/postgres-supervisor/config.yaml`. If you want to change were the config file is loaded from then you can set `POSTGRES_SUPERVISOR_CONFIG`.
 
-YAML is strict: unknown fields fail startup. A string exactly equal to `${ENV_NAME}` is replaced once with the non-empty environment value. Use your orchestrator's secret support for those variables.
+YAML is strict: unknown fields fail startup. A string exactly equal to `${ENV_NAME}` is replaced once with the non-empty environment value. `${ENV_NAME:-default}` uses `default` when the variable is unset or empty. Use your orchestrator's secret support for those variables.
 
 `settings.listen_addresses`, `settings.port`, and `settings.unix_socket_directories` are optional and default to `*`, `5432`, and `/var/run/postgresql`. These YAML values override conflicting PostgreSQL command-line options. The supervisor and pgBackRest use the configured port and first socket directory. Custom socket directories must already exist and be writable by the `postgres` operating-system user; publish the configured port separately through your container runtime when remote access is required.
 

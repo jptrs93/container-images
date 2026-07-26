@@ -37,6 +37,59 @@ func TestMaybeEnvResolvesLiteral(t *testing.T) {
 	}
 }
 
+func TestMaybeEnvResolvesDefault(t *testing.T) {
+	t.Setenv("TEST_PRESENT", "from-env")
+	t.Setenv("TEST_EMPTY", "")
+
+	value, err := MaybeEnv("${TEST_PRESENT:-fallback}").Resolve()
+	if err != nil || value != "from-env" {
+		t.Fatalf("present env = %q, %v", value, err)
+	}
+
+	value, err = MaybeEnv("${TEST_EMPTY:-fallback}").Resolve()
+	if err != nil || value != "fallback" {
+		t.Fatalf("empty env = %q, %v", value, err)
+	}
+
+	value, err = MaybeEnv("${TEST_UNSET:-fallback}").Resolve()
+	if err != nil || value != "fallback" {
+		t.Fatalf("unset env = %q, %v", value, err)
+	}
+
+	value, err = MaybeEnv("${TEST_UNSET:-https://example.com:8443}").Resolve()
+	if err != nil || value != "https://example.com:8443" {
+		t.Fatalf("default with colon = %q, %v", value, err)
+	}
+
+	value, err = MaybeEnv("${TEST_UNSET:-}").Resolve()
+	if err != nil || value != "" {
+		t.Fatalf("empty default = %q, %v", value, err)
+	}
+
+	if _, err := MaybeEnv("${TEST_UNSET}").Resolve(); err == nil {
+		t.Fatal("missing required env succeeded")
+	}
+}
+
+func TestLoadResolvesDefaultEnvironmentReference(t *testing.T) {
+	t.Setenv("TEST_PASSWORD", "password-from-environment")
+	path := t.TempDir() + "/config.yaml"
+	contents := "initdb:\n  postgres_password: ${TEST_PASSWORD}\n  postgres_db: ${TEST_DB:-app}\nroles:\n  - name: ${TEST_ROLE:-app}\n"
+	if err := os.WriteFile(path, []byte(contents), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.InitDB.PostgresDB != "app" || cfg.Roles[0].Name != "app" {
+		t.Fatalf("resolved defaults = %#v", cfg)
+	}
+	if strings.Join(cfg.EnvironmentReferences(), ",") != "TEST_DB,TEST_PASSWORD,TEST_ROLE" {
+		t.Fatalf("environment references = %q", cfg.EnvironmentReferences())
+	}
+}
+
 func TestLoadResolvesStringEnvironmentReferencesOnce(t *testing.T) {
 	t.Setenv("TEST_PASSWORD", "password-from-environment")
 	t.Setenv("TEST_HBA", "host all all 10.0.0.0/8 scram-sha-256")

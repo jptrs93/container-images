@@ -276,11 +276,16 @@ func (value MaybeEnv) Resolve() (string, error) {
 	if len(matches) == 0 {
 		return string(value), nil
 	}
-	resolved, ok := os.LookupEnv(matches[1])
-	if !ok || resolved == "" {
-		return "", fmt.Errorf("environment variable %s is empty", matches[1])
+	name := matches[1]
+	hasDefault := matches[2] != ""
+	resolved, ok := os.LookupEnv(name)
+	if ok && resolved != "" {
+		return resolved, nil
 	}
-	return resolved, nil
+	if hasDefault {
+		return matches[3], nil
+	}
+	return "", fmt.Errorf("environment variable %s is empty", name)
 }
 
 func (value MaybeEnv) Required(field string) (string, error) {
@@ -462,7 +467,9 @@ func (value MaybeEnv) Configured() bool {
 	return value != ""
 }
 
-var environmentReference = regexp.MustCompile(`^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$`)
+// environmentReference matches ${NAME} or ${NAME:-default}. The default may be
+// empty (${NAME:-}) and may contain any characters except '}'.
+var environmentReference = regexp.MustCompile(`^\$\{([A-Za-z_][A-Za-z0-9_]*)(:-([^}]*))?\}$`)
 var stanzaName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
 var sizeValue = regexp.MustCompile(`(?i)^([0-9]+)([KMGTPE]?)(i?B)?$`)
 var hostLabel = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$`)
