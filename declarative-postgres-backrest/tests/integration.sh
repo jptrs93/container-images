@@ -122,6 +122,7 @@ backup_env=(
     -e INTEGRATION_WRITER_PASSWORD=writer-password
     -e INTEGRATION_GROUP_READER_PASSWORD=group-reader-password
     -e INTEGRATION_BUILDER_PASSWORD=builder-password
+    -e INTEGRATION_INHERITED_READER_PASSWORD=inherited-reader-password
     -e INTEGRATION_S3_ACCESS_KEY=integration-key
     -e INTEGRATION_S3_SECRET_KEY=integration-secret
 )
@@ -176,6 +177,13 @@ psql_as app_owner owner-password -c "create function app.answer() returns intege
 psql_as reader_one reader-one-password -tAc 'select app.answer()' | grep -qx 42
 must_fail psql_as reader_two reader-two-password -tAc 'select app.answer()'
 
+# app_read cannot log in, so its grant is only reachable by a role that has been
+# granted it. inherited_reader holds no permissions of its own.
+docker exec "$primary" psql -U integration_admin -d app -tAc "select rolcanlogin from pg_roles where rolname = 'app_read'" | grep -qx f
+must_fail docker exec -e PGPASSWORD=whatever "$primary" psql -h 127.0.0.1 -U app_read -d app -tAc 'select 1'
+psql_as inherited_reader inherited-reader-password -tAc 'select value from app.records where id = 1' | grep -qx present
+must_fail psql_as inherited_reader inherited-reader-password -c "insert into app.records values (3, 'denied')"
+
 # Extension functions keep the PostgreSQL default rather than being rewritten
 # with explicit grants by the revoke pass.
 docker exec "$primary" psql -U integration_admin -d app -tAc "select count(proacl) from pg_proc join pg_namespace on pg_namespace.oid = pg_proc.pronamespace where nspname = 'public'" | grep -qx 0
@@ -195,6 +203,7 @@ rotated_backup_env=(
     -e INTEGRATION_WRITER_PASSWORD=rotated-writer-password
     -e INTEGRATION_GROUP_READER_PASSWORD=group-reader-password
     -e INTEGRATION_BUILDER_PASSWORD=builder-password
+    -e INTEGRATION_INHERITED_READER_PASSWORD=inherited-reader-password
     -e INTEGRATION_AUDIT_READER_PASSWORD=audit-reader-password
     -e INTEGRATION_S3_ACCESS_KEY=integration-key
     -e INTEGRATION_S3_SECRET_KEY=integration-secret
@@ -248,6 +257,11 @@ psql_as audit_reader audit-reader-password -tAc 'select value from app.admin_cre
 
 # reader_one has no permissions left, so the routine grant is gone too.
 must_fail psql_as reader_one rotated-reader-one-password -tAc 'select app.answer()'
+
+# app_read keeps the membership but loses its permissions, so inherited_reader
+# loses the access it only ever held through that role.
+docker exec "$primary" psql -U integration_admin -d app -tAc "select pg_has_role('inherited_reader', 'app_read', 'USAGE')" | grep -qx t
+must_fail psql_as inherited_reader inherited-reader-password -tAc 'select value from app.records where id = 1'
 
 docker exec "$primary" gosu postgres pgbackrest --stanza=integration --type=diff backup >/dev/null
 docker stop "$primary" >/dev/null

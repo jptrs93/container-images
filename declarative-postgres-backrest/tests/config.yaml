@@ -62,8 +62,21 @@ roles:
           - USAGE
   - name: group_reader
     password: ${INTEGRATION_GROUP_READER_PASSWORD}
-    member_of:
+    roles:
       - pg_read_all_data
+  - name: app_read
+    login: false
+    permissions:
+      - database: app
+        schema: app
+        grants:
+          - USAGE
+        table_grants:
+          - SELECT
+  - name: inherited_reader
+    password: ${INTEGRATION_INHERITED_READER_PASSWORD}
+    roles:
+      - app_read
   - name: app_builder
     password: ${INTEGRATION_BUILDER_PASSWORD}
     permissions:

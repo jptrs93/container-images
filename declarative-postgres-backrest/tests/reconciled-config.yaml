@@ -61,6 +61,12 @@ roles:
           - SELECT
   - name: group_reader
     password: ${INTEGRATION_GROUP_READER_PASSWORD}
+  - name: app_read
+    login: false
+  - name: inherited_reader
+    password: ${INTEGRATION_INHERITED_READER_PASSWORD}
+    roles:
+      - app_read
   - name: app_builder
     password: ${INTEGRATION_BUILDER_PASSWORD}
     permissions:

@@ -225,10 +225,10 @@ func TestValidateAllowsOmittedDatabaseOwner(t *testing.T) {
 	}
 }
 
-func TestValidateMemberOf(t *testing.T) {
+func TestValidateGrantedRoles(t *testing.T) {
 	valid := Config{Roles: []Role{
 		{Name: "app_owners"},
-		{Name: "alice", MemberOf: []MaybeEnv{"app_owners", "pg_read_all_data"}},
+		{Name: "alice", Roles: []MaybeEnv{"app_owners", "pg_read_all_data"}},
 	}}
 	if err := valid.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v", err)
@@ -239,20 +239,20 @@ func TestValidateMemberOf(t *testing.T) {
 		want string
 	}{
 		"self membership": {
-			Config{Roles: []Role{{Name: "alice", MemberOf: []MaybeEnv{"alice"}}}},
-			"cannot be a member of itself",
+			Config{Roles: []Role{{Name: "alice", Roles: []MaybeEnv{"alice"}}}},
+			"cannot be granted to itself",
 		},
 		"pg_database_owner": {
-			Config{Roles: []Role{{Name: "alice", MemberOf: []MaybeEnv{"pg_database_owner"}}}},
+			Config{Roles: []Role{{Name: "alice", Roles: []MaybeEnv{"pg_database_owner"}}}},
 			"pg_database_owner cannot have explicit members",
 		},
 		"duplicate": {
-			Config{Roles: []Role{{Name: "alice", MemberOf: []MaybeEnv{"g", "g"}}}},
+			Config{Roles: []Role{{Name: "alice", Roles: []MaybeEnv{"g", "g"}}}},
 			"is declared more than once",
 		},
 		"empty entry": {
-			Config{Roles: []Role{{Name: "alice", MemberOf: []MaybeEnv{""}}}},
-			"roles[0].member_of[0] is required",
+			Config{Roles: []Role{{Name: "alice", Roles: []MaybeEnv{""}}}},
+			"roles[0].roles[0] is required",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -264,10 +264,10 @@ func TestValidateMemberOf(t *testing.T) {
 	}
 }
 
-func TestLoadResolvesMemberOf(t *testing.T) {
+func TestLoadResolvesGrantedRoles(t *testing.T) {
 	t.Setenv("TEST_GROUP", "app_owners")
 	path := t.TempDir() + "/config.yaml"
-	contents := "roles:\n  - name: alice\n    member_of:\n      - ${TEST_GROUP}\n      - ${TEST_MISSING:-pg_read_all_data}\n"
+	contents := "roles:\n  - name: alice\n    roles:\n      - ${TEST_GROUP}\n      - ${TEST_MISSING:-pg_read_all_data}\n"
 	if err := os.WriteFile(path, []byte(contents), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -275,8 +275,38 @@ func TestLoadResolvesMemberOf(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if cfg.Roles[0].MemberOf[0] != "app_owners" || cfg.Roles[0].MemberOf[1] != "pg_read_all_data" {
-		t.Fatalf("resolved member_of = %v", cfg.Roles[0].MemberOf)
+	if cfg.Roles[0].Roles[0] != "app_owners" || cfg.Roles[0].Roles[1] != "pg_read_all_data" {
+		t.Fatalf("resolved roles = %v", cfg.Roles[0].Roles)
+	}
+}
+
+func TestRoleCanLoginDefaultsToTrue(t *testing.T) {
+	yes, no := true, false
+	for name, testCase := range map[string]struct {
+		role Role
+		want bool
+	}{
+		"omitted":        {Role{Name: "app"}, true},
+		"explicit true":  {Role{Name: "app", Login: &yes}, true},
+		"explicit false": {Role{Name: "app", Login: &no}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := testCase.role.CanLogin(); got != testCase.want {
+				t.Fatalf("CanLogin() = %v, want %v", got, testCase.want)
+			}
+		})
+	}
+}
+
+func TestValidateRejectsPasswordOnNoLoginRole(t *testing.T) {
+	no := false
+	cfg := Config{Roles: []Role{{Name: "app_read", Login: &no, Password: "secret"}}}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "which cannot log in") {
+		t.Fatalf("Validate() error = %v, want password-on-nologin error", err)
+	}
+	cfg = Config{Roles: []Role{{Name: "app_read", Login: &no}}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v, want passwordless nologin role to be accepted", err)
 	}
 }
 

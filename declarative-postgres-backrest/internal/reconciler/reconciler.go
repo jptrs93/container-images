@@ -36,7 +36,7 @@ func Reconcile(ctx context.Context, cfg config.Config, initDB *config.InitDBOpti
 		if err != nil {
 			return err
 		}
-		if err := ensureRole(ctx, admin, name, password); err != nil {
+		if err := ensureRole(ctx, admin, name, password, role.CanLogin()); err != nil {
 			return err
 		}
 	}
@@ -46,16 +46,16 @@ func Reconcile(ctx context.Context, cfg config.Config, initDB *config.InitDBOpti
 		}
 	}
 
-	// Memberships are reconciled once every declared role exists, so a role can
-	// be a member of another role declared later in the file.
+	// Granted roles are reconciled once every declared role exists, so a role can
+	// be granted another role declared later in the file.
 	for index, role := range cfg.Roles {
 		name, err := role.Name.Required(fmt.Sprintf("roles[%d].name", index))
 		if err != nil {
 			return err
 		}
-		groups := make([]string, 0, len(role.MemberOf))
-		for memberIndex, member := range role.MemberOf {
-			group, err := member.Required(fmt.Sprintf("roles[%d].member_of[%d]", index, memberIndex))
+		groups := make([]string, 0, len(role.Roles))
+		for grantedIndex, member := range role.Roles {
+			group, err := member.Required(fmt.Sprintf("roles[%d].roles[%d]", index, grantedIndex))
 			if err != nil {
 				return err
 			}
@@ -295,14 +295,26 @@ func revokeSchemaPrivileges(ctx context.Context, conn *pgx.Conn, role, schema st
 	return nil
 }
 
-func ensureRole(ctx context.Context, conn *pgx.Conn, name, password string) error {
-	var exists bool
-	if err := conn.QueryRow(ctx, "select exists(select 1 from pg_roles where rolname = $1)", name).Scan(&exists); err != nil {
+func ensureRole(ctx context.Context, conn *pgx.Conn, name, password string, canLogin bool) error {
+	attribute := "nologin"
+	if canLogin {
+		attribute = "login"
+	}
+
+	var currentLogin *bool
+	if err := conn.QueryRow(ctx, "select rolcanlogin from pg_roles where rolname = $1", name).Scan(&currentLogin); err != nil && err != pgx.ErrNoRows {
 		return fmt.Errorf("check role %q: %w", name, err)
 	}
-	if !exists {
-		if _, err := conn.Exec(ctx, "create role "+identifier(name)+" login"); err != nil {
+	switch {
+	case currentLogin == nil:
+		if _, err := conn.Exec(ctx, "create role "+identifier(name)+" "+attribute); err != nil {
 			return fmt.Errorf("create role %q: %w", name, err)
+		}
+	case *currentLogin != canLogin:
+		// Login is reconciled like everything else, so turning a role into a group
+		// after the fact takes its ability to connect away.
+		if _, err := conn.Exec(ctx, "alter role "+identifier(name)+" "+attribute); err != nil {
+			return fmt.Errorf("set %s on role %q: %w", attribute, name, err)
 		}
 	}
 	if password != "" {

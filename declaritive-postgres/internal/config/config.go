@@ -27,8 +27,16 @@ type MaybeEnv string
 type Role struct {
 	Name        MaybeEnv     `yaml:"name"`
 	Password    MaybeEnv     `yaml:"password"`
-	MemberOf    []MaybeEnv   `yaml:"member_of"`
+	Login       *bool        `yaml:"login"`
+	Roles       []MaybeEnv   `yaml:"roles"`
 	Permissions []Permission `yaml:"permissions"`
+}
+
+// CanLogin reports whether a role should hold the LOGIN attribute. Roles log in
+// unless they say otherwise, which keeps a plain name-and-password declaration
+// meaning what it always has.
+func (role Role) CanLogin() bool {
+	return role.Login == nil || *role.Login
 }
 
 type Permission struct {
@@ -125,7 +133,10 @@ func (cfg *Config) Validate() error {
 			return fmt.Errorf("roles[%d].name %q duplicates initdb.postgres_user", roleIndex, name)
 		}
 		roleNames[name] = struct{}{}
-		if err := validateMemberOf(roleIndex, name, role.MemberOf); err != nil {
+		if !role.CanLogin() && role.Password.Configured() {
+			return fmt.Errorf("roles[%d].password is set on %q, which cannot log in", roleIndex, name)
+		}
+		if err := validateGrantedRoles(roleIndex, name, role.Roles); err != nil {
 			return err
 		}
 		for permissionIndex, permission := range role.Permissions {
@@ -198,24 +209,24 @@ var (
 	routineGrants  = []string{"EXECUTE"}
 )
 
-// validateMemberOf rejects memberships PostgreSQL would refuse at reconcile
+// validateGrantedRoles rejects memberships PostgreSQL would refuse at reconcile
 // time, so a bad declaration fails while parsing the config rather than
 // crash-looping the container once the cluster is already running.
-func validateMemberOf(roleIndex int, name string, memberOf []MaybeEnv) error {
-	seen := make(map[string]struct{}, len(memberOf))
-	for memberIndex, member := range memberOf {
-		group, err := member.Required(fmt.Sprintf("roles[%d].member_of[%d]", roleIndex, memberIndex))
+func validateGrantedRoles(roleIndex int, name string, granted []MaybeEnv) error {
+	seen := make(map[string]struct{}, len(granted))
+	for grantedIndex, member := range granted {
+		group, err := member.Required(fmt.Sprintf("roles[%d].roles[%d]", roleIndex, grantedIndex))
 		if err != nil {
 			return err
 		}
 		if group == name {
-			return fmt.Errorf("roles[%d].member_of[%d] %q cannot be a member of itself", roleIndex, memberIndex, group)
+			return fmt.Errorf("roles[%d].roles[%d] %q cannot be granted to itself", roleIndex, grantedIndex, group)
 		}
 		if group == "pg_database_owner" {
-			return fmt.Errorf("roles[%d].member_of[%d] pg_database_owner cannot have explicit members, set it as a database owner instead", roleIndex, memberIndex)
+			return fmt.Errorf("roles[%d].roles[%d] pg_database_owner cannot have explicit members, set it as a database owner instead", roleIndex, grantedIndex)
 		}
 		if _, exists := seen[group]; exists {
-			return fmt.Errorf("roles[%d].member_of[%d] %q is declared more than once", roleIndex, memberIndex, group)
+			return fmt.Errorf("roles[%d].roles[%d] %q is declared more than once", roleIndex, grantedIndex, group)
 		}
 		seen[group] = struct{}{}
 	}
@@ -388,8 +399,8 @@ func (cfg *Config) resolveEnvironmentReferences() error {
 		if err := resolve(fmt.Sprintf("roles[%d].password", roleIndex), &role.Password); err != nil {
 			return err
 		}
-		for memberIndex := range role.MemberOf {
-			if err := resolve(fmt.Sprintf("roles[%d].member_of[%d]", roleIndex, memberIndex), &role.MemberOf[memberIndex]); err != nil {
+		for grantedIndex := range role.Roles {
+			if err := resolve(fmt.Sprintf("roles[%d].roles[%d]", roleIndex, grantedIndex), &role.Roles[grantedIndex]); err != nil {
 				return err
 			}
 		}
