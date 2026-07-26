@@ -32,6 +32,7 @@ type MaybeEnv string
 type Role struct {
 	Name        MaybeEnv     `yaml:"name"`
 	Password    MaybeEnv     `yaml:"password"`
+	MemberOf    []MaybeEnv   `yaml:"member_of"`
 	Permissions []Permission `yaml:"permissions"`
 }
 
@@ -190,6 +191,9 @@ func (cfg *Config) Validate() error {
 			return fmt.Errorf("roles[%d].name %q duplicates initdb.postgres_user", roleIndex, name)
 		}
 		roleNames[name] = struct{}{}
+		if err := validateMemberOf(roleIndex, name, role.MemberOf); err != nil {
+			return err
+		}
 		for permissionIndex, permission := range role.Permissions {
 			if err := permission.Validate(); err != nil {
 				return fmt.Errorf("roles[%d].permissions[%d]: %w", roleIndex, permissionIndex, err)
@@ -260,6 +264,30 @@ var (
 	schemaGrants = []string{"CREATE", "USAGE"}
 	tableGrants  = []string{"SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER", "MAINTAIN"}
 )
+
+// validateMemberOf rejects memberships PostgreSQL would refuse at reconcile
+// time, so a bad declaration fails while parsing the config rather than
+// crash-looping the container once the cluster is already running.
+func validateMemberOf(roleIndex int, name string, memberOf []MaybeEnv) error {
+	seen := make(map[string]struct{}, len(memberOf))
+	for memberIndex, member := range memberOf {
+		group, err := member.Required(fmt.Sprintf("roles[%d].member_of[%d]", roleIndex, memberIndex))
+		if err != nil {
+			return err
+		}
+		if group == name {
+			return fmt.Errorf("roles[%d].member_of[%d] %q cannot be a member of itself", roleIndex, memberIndex, group)
+		}
+		if group == "pg_database_owner" {
+			return fmt.Errorf("roles[%d].member_of[%d] pg_database_owner cannot have explicit members, set it as a database owner instead", roleIndex, memberIndex)
+		}
+		if _, exists := seen[group]; exists {
+			return fmt.Errorf("roles[%d].member_of[%d] %q is declared more than once", roleIndex, memberIndex, group)
+		}
+		seen[group] = struct{}{}
+	}
+	return nil
+}
 
 func (permission Permission) Validate() error {
 	if permission.Database == "" || (len(permission.Grants) == 0 && len(permission.TableGrants) == 0) {
@@ -583,6 +611,11 @@ func (cfg *Config) resolveEnvironmentReferences() error {
 		}
 		if err := resolve(fmt.Sprintf("roles[%d].password", roleIndex), &role.Password); err != nil {
 			return err
+		}
+		for memberIndex := range role.MemberOf {
+			if err := resolve(fmt.Sprintf("roles[%d].member_of[%d]", roleIndex, memberIndex), &role.MemberOf[memberIndex]); err != nil {
+				return err
+			}
 		}
 		for permissionIndex := range role.Permissions {
 			permission := &role.Permissions[permissionIndex]

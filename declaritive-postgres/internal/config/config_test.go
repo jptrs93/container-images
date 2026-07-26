@@ -211,6 +211,61 @@ func TestValidateAllowsOmittedDatabaseOwner(t *testing.T) {
 	}
 }
 
+func TestValidateMemberOf(t *testing.T) {
+	valid := Config{Roles: []Role{
+		{Name: "app_owners"},
+		{Name: "alice", MemberOf: []MaybeEnv{"app_owners", "pg_read_all_data"}},
+	}}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+
+	for name, testCase := range map[string]struct {
+		cfg  Config
+		want string
+	}{
+		"self membership": {
+			Config{Roles: []Role{{Name: "alice", MemberOf: []MaybeEnv{"alice"}}}},
+			"cannot be a member of itself",
+		},
+		"pg_database_owner": {
+			Config{Roles: []Role{{Name: "alice", MemberOf: []MaybeEnv{"pg_database_owner"}}}},
+			"pg_database_owner cannot have explicit members",
+		},
+		"duplicate": {
+			Config{Roles: []Role{{Name: "alice", MemberOf: []MaybeEnv{"g", "g"}}}},
+			"is declared more than once",
+		},
+		"empty entry": {
+			Config{Roles: []Role{{Name: "alice", MemberOf: []MaybeEnv{""}}}},
+			"roles[0].member_of[0] is required",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := testCase.cfg.Validate()
+			if err == nil || !strings.Contains(err.Error(), testCase.want) {
+				t.Fatalf("Validate() error = %v, want %q", err, testCase.want)
+			}
+		})
+	}
+}
+
+func TestLoadResolvesMemberOf(t *testing.T) {
+	t.Setenv("TEST_GROUP", "app_owners")
+	path := t.TempDir() + "/config.yaml"
+	contents := "roles:\n  - name: alice\n    member_of:\n      - ${TEST_GROUP}\n      - ${TEST_MISSING:-pg_read_all_data}\n"
+	if err := os.WriteFile(path, []byte(contents), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Roles[0].MemberOf[0] != "app_owners" || cfg.Roles[0].MemberOf[1] != "pg_read_all_data" {
+		t.Fatalf("resolved member_of = %v", cfg.Roles[0].MemberOf)
+	}
+}
+
 func TestLoadRejectsMultipleYAMLDocuments(t *testing.T) {
 	path := t.TempDir() + "/config.yaml"
 	if err := os.WriteFile(path, []byte("settings:\n  max_connections: 10\n---\nsettings:\n  max_connections: 20\n"), 0600); err != nil {

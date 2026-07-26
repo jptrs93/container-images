@@ -57,6 +57,8 @@ roles:
           - USAGE
         table_grants:
           - SELECT
+  - name: group_reader
+    password: ${INTEGRATION_GROUP_READER_PASSWORD}
 databases:
   - name: app
     owner: app_owner

@@ -152,6 +152,8 @@ databases:
 
 ## Reconciliation
 
+`member_of` grants a role membership in other roles, including the PostgreSQL predefined roles such as `pg_read_all_data`, `pg_write_all_data` and `pg_monitor`. Membership covers objects created later without a reconcile, so it is the simplest way to give a role blanket read or write access, but roles are cluster-wide and a membership therefore applies to every database. Memberships not listed are revoked, so removing an entry converges. `pg_database_owner` is rejected because PostgreSQL does not allow explicit members; set it as a database `owner` instead. Granting `pg_read_server_files`, `pg_write_server_files` or `pg_execute_server_program` is effectively equivalent to granting superuser, since each provides a path to running code as the `postgres` operating-system user.
+
 The supervisor creates missing roles, databases, schemas, and extensions. Declared role passwords are updated; omitted passwords are left unchanged. Roles, databases, schemas, and extensions removed from YAML are not deleted.
 
 `owner` is optional and defaults to the bootstrap superuser, which is `initdb.postgres_user` when declared and otherwise `POSTGRES_USER` or `postgres`. It is reconciled on every startup, not only at creation: a database or declared schema whose owner has drifted from the YAML is handed back to the declared role. Changing `owner` does not transfer ownership of tables, sequences, or other objects already inside the database, which stay with their original owner. Use `REASSIGN OWNED BY <old> TO <new>` to move those.

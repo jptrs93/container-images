@@ -56,6 +56,10 @@ roles:
           - INSERT
           - UPDATE
           - DELETE
+  - name: group_reader
+    password: ${INTEGRATION_GROUP_READER_PASSWORD}
+    member_of:
+      - pg_read_all_data
 databases:
   - name: app
     owner: app_owner

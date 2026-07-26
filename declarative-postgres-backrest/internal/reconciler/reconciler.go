@@ -47,6 +47,26 @@ func Reconcile(ctx context.Context, cfg config.Config, initDB *config.InitDBOpti
 		}
 	}
 
+	// Memberships are reconciled once every declared role exists, so a role can
+	// be a member of another role declared later in the file.
+	for index, role := range cfg.Roles {
+		name, err := role.Name.Required(fmt.Sprintf("roles[%d].name", index))
+		if err != nil {
+			return err
+		}
+		groups := make([]string, 0, len(role.MemberOf))
+		for memberIndex, member := range role.MemberOf {
+			group, err := member.Required(fmt.Sprintf("roles[%d].member_of[%d]", index, memberIndex))
+			if err != nil {
+				return err
+			}
+			groups = append(groups, group)
+		}
+		if err := ensureRoleMemberships(ctx, admin, name, groups); err != nil {
+			return err
+		}
+	}
+
 	// An omitted owner leaves the database with the bootstrap superuser, which is
 	// also the role the supervisor reconciles as.
 	defaultOwner := supervisorUser
@@ -147,6 +167,55 @@ func ensureRole(ctx context.Context, conn *pgx.Conn, name, password string) erro
 	if password != "" {
 		if err := setRolePassword(ctx, conn, name, password); err != nil {
 			return fmt.Errorf("set password for role %q: %w", name, err)
+		}
+	}
+	return nil
+}
+
+// ensureRoleMemberships makes the role's memberships match the declaration
+// exactly: memberships that are not declared are revoked, so removing an entry
+// from the YAML converges rather than leaving the grant behind. Only roles
+// declared in the configuration are touched.
+func ensureRoleMemberships(ctx context.Context, conn *pgx.Conn, role string, groups []string) error {
+	rows, err := conn.Query(ctx, "select granted.rolname from pg_auth_members join pg_roles granted on granted.oid = pg_auth_members.roleid join pg_roles member on member.oid = pg_auth_members.member where member.rolname = $1", role)
+	if err != nil {
+		return fmt.Errorf("list memberships of role %q: %w", role, err)
+	}
+	current := map[string]struct{}{}
+	for rows.Next() {
+		var group string
+		if err := rows.Scan(&group); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan membership of role %q: %w", role, err)
+		}
+		current[group] = struct{}{}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate memberships of role %q: %w", role, err)
+	}
+
+	declared := make(map[string]struct{}, len(groups))
+	for _, group := range groups {
+		declared[group] = struct{}{}
+		if _, exists := current[group]; exists {
+			continue
+		}
+		if _, err := conn.Exec(ctx, "grant "+identifier(group)+" to "+identifier(role)); err != nil {
+			return fmt.Errorf("grant membership of %q to role %q: %w", group, role, err)
+		}
+	}
+
+	revoked := make([]string, 0, len(current))
+	for group := range current {
+		if _, exists := declared[group]; !exists {
+			revoked = append(revoked, group)
+		}
+	}
+	sort.Strings(revoked)
+	for _, group := range revoked {
+		if _, err := conn.Exec(ctx, "revoke "+identifier(group)+" from "+identifier(role)); err != nil {
+			return fmt.Errorf("revoke membership of %q from role %q: %w", group, role, err)
 		}
 	}
 	return nil

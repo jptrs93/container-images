@@ -84,6 +84,7 @@ initial_env=(
     -e INTEGRATION_READER_ONE_PASSWORD=reader-one-password
     -e INTEGRATION_READER_TWO_PASSWORD=reader-two-password
     -e INTEGRATION_WRITER_PASSWORD=writer-password
+    -e INTEGRATION_GROUP_READER_PASSWORD=group-reader-password
 )
 docker run -d --name "$primary" --volume "$primary_volume":/var/lib/postgresql \
     --volume "$config_file":/etc/postgres-supervisor/config.yaml:ro \
@@ -111,6 +112,8 @@ docker exec "$primary" psql -U integration_admin -d app -tAc "select pg_get_user
 psql_as app_owner owner-password -c "create table app.records (id integer primary key, value text not null); insert into app.records values (1, 'present');" >/dev/null
 psql_as reader_one reader-one-password -tAc 'select value from app.records where id = 1' | grep -qx present
 psql_as reader_two reader-two-password -tAc 'select value from app.records where id = 1' | grep -qx present
+psql_as group_reader group-reader-password -tAc 'select value from app.records where id = 1' | grep -qx present
+docker exec "$primary" psql -U integration_admin -d app -tAc "select pg_has_role('group_reader', 'pg_read_all_data', 'USAGE')" | grep -qx t
 must_fail psql_as reader_one reader-one-password -c "insert into app.records values (2, 'denied')"
 must_fail psql_as reader_one reader-one-password -c "create table app.denied (id integer)"
 psql_as app_writer writer-password -c "insert into app.records values (2, 'written'); update app.records set value = 'updated' where id = 2; delete from app.records where id = 2;" >/dev/null
@@ -132,6 +135,7 @@ rotated_env=(
     -e INTEGRATION_READER_ONE_PASSWORD=rotated-reader-one-password
     -e INTEGRATION_READER_TWO_PASSWORD=reader-two-password
     -e INTEGRATION_WRITER_PASSWORD=rotated-writer-password
+    -e INTEGRATION_GROUP_READER_PASSWORD=group-reader-password
     -e INTEGRATION_AUDIT_READER_PASSWORD=audit-reader-password
 )
 docker run -d --name "$primary" --volume "$primary_volume":/var/lib/postgresql \
@@ -161,6 +165,8 @@ psql_as reader_one rotated-reader-one-password -tAc 'select 1' | grep -qx 1
 must_fail psql_as reader_one rotated-reader-one-password -tAc 'select value from app.records where id = 1'
 docker exec "$primary" psql -U integration_admin -d app -tAc "select has_schema_privilege('reader_one', 'app', 'USAGE')" | grep -qx f
 psql_as reader_two reader-two-password -tAc 'select value from app.records where id = 1' | grep -qx present
+docker exec "$primary" psql -U integration_admin -d app -tAc "select pg_has_role('group_reader', 'pg_read_all_data', 'USAGE')" | grep -qx f
+must_fail psql_as group_reader group-reader-password -tAc 'select value from app.records where id = 1'
 psql_as app_writer rotated-writer-password -c "insert into app.records values (2, 'written'); update app.records set value = 'updated' where id = 2;" >/dev/null
 psql_as app_writer rotated-writer-password -c "insert into app.serial_records (value) values ('sequenced again')" >/dev/null
 must_fail psql_as app_writer rotated-writer-password -c 'delete from app.records where id = 2'
