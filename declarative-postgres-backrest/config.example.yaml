@@ -1,7 +1,8 @@
 settings:
   max_connections: 100
+  shared_preload_libraries: pg_stat_statements
 hba:
-  - host all all all scram-sha-256
+  - host all app all scram-sha-256
 initdb:
   postgres_user: ${POSTGRES_USER}
   postgres_password: ${POSTGRES_PASSWORD}
@@ -31,12 +32,13 @@ pgbackrest:
   initial_backup: true
   timezone: UTC
 roles:
-  - name: app_user
-    password: ${APP_DATABASE_PASSWORD}
+  - name: app
+    password: ${APP_PASSWORD}
 databases:
   - name: radkit
-    owner: app_user
+    owner: app
     schemas:
       - staging
     extensions:
       - pgcrypto
+      - pg_stat_statements

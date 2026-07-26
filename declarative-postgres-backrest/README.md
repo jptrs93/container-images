@@ -45,17 +45,19 @@ This complete configuration creates an application owner, a read-only role, the 
 settings:
   max_connections: 100
   shared_buffers: 256MB
+  shared_preload_libraries: pg_stat_statements
 hba:
-  - host all all 10.0.0.0/8 scram-sha-256
+  - host all app all scram-sha-256
+  - host all reader all scram-sha-256
 initdb:
   postgres_user: postgres
   postgres_password: ${POSTGRES_PASSWORD}
   postgres_db: postgres
 roles:
-  - name: app_owner
-    password: ${APP_OWNER_PASSWORD}
-  - name: app_reader
-    password: ${APP_READER_PASSWORD}
+  - name: app
+    password: ${APP_PASSWORD}
+  - name: reader
+    password: ${READER_PASSWORD}
     permissions:
       - database: app
         grants:
@@ -64,11 +66,12 @@ roles:
           - SELECT
 databases:
   - name: app
-    owner: app_owner
+    owner: app
     schemas:
       - staging
     extensions:
       - pgcrypto
+      - pg_stat_statements
 ```
 
 ### PostgreSQL With pgBackRest
@@ -79,8 +82,10 @@ This complete configuration enables WAL archiving, scheduled backups, and S3 rep
 settings:
   max_connections: 100
   shared_buffers: 256MB
+  shared_preload_libraries: pg_stat_statements
 hba:
-  - host all all 10.0.0.0/8 scram-sha-256
+  - host all app all scram-sha-256
+  - host all reader all scram-sha-256
 initdb:
   postgres_user: postgres
   postgres_password: ${POSTGRES_PASSWORD}
@@ -112,10 +117,10 @@ pgbackrest:
   initial_backup: true
   timezone: UTC
 roles:
-  - name: app_owner
-    password: ${APP_OWNER_PASSWORD}
-  - name: app_reader
-    password: ${APP_READER_PASSWORD}
+  - name: app
+    password: ${APP_PASSWORD}
+  - name: reader
+    password: ${READER_PASSWORD}
     permissions:
       - database: app
         schema: public
@@ -125,11 +130,12 @@ roles:
           - SELECT
 databases:
   - name: app
-    owner: app_owner
+    owner: app
     schemas:
       - staging
     extensions:
       - pgcrypto
+      - pg_stat_statements
 ```
 
 ## Lifecycle

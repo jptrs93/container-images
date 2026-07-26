@@ -41,23 +41,25 @@ initdb:
 
 ### Declarative application database
 
-Bootstrap the administrative `postgres` database, then let reconciliation create `app` with the non-superuser `app_owner` as its owner:
+Bootstrap the administrative `postgres` database, then let reconciliation create `app` with the non-superuser `app` as its owner:
 
 ```yaml
 settings:
   max_connections: 100
   shared_buffers: 256MB
+  shared_preload_libraries: pg_stat_statements
 hba:
-  - host all all 10.0.0.0/8 scram-sha-256
+  - host all app all scram-sha-256
+  - host all reader all scram-sha-256
 initdb:
   postgres_user: postgres
   postgres_password: ${POSTGRES_PASSWORD}
   postgres_db: postgres
 roles:
-  - name: app_owner
-    password: ${APP_OWNER_PASSWORD}
-  - name: app_reader
-    password: ${APP_READER_PASSWORD}
+  - name: app
+    password: ${APP_PASSWORD}
+  - name: reader
+    password: ${READER_PASSWORD}
     permissions:
       - database: app
         grants:
@@ -66,11 +68,12 @@ roles:
           - SELECT
 databases:
   - name: app
-    owner: app_owner
+    owner: app
     schemas:
       - staging
     extensions:
       - pgcrypto
+      - pg_stat_statements
 ```
 
 ## Lifecycle
