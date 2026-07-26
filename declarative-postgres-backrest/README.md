@@ -154,9 +154,13 @@ databases:
 
 The supervisor creates missing roles, databases, schemas, and extensions. Declared role passwords are updated; omitted passwords are left unchanged. Roles, databases, schemas, and extensions removed from YAML are not deleted.
 
-`owner` is reconciled on every startup, not only at creation: a database or declared schema whose owner has drifted from the YAML is handed back to the declared role. Changing `owner` does not transfer ownership of tables, sequences, or other objects already inside the database, which stay with their original owner. Use `REASSIGN OWNED BY <old> TO <new>` to move those.
+`owner` is optional and defaults to the bootstrap superuser, which is `initdb.postgres_user` when declared and otherwise `POSTGRES_USER` or `postgres`. It is reconciled on every startup, not only at creation: a database or declared schema whose owner has drifted from the YAML is handed back to the declared role. Changing `owner` does not transfer ownership of tables, sequences, or other objects already inside the database, which stay with their original owner. Use `REASSIGN OWNED BY <old> TO <new>` to move those.
 
-`grants` accepts `CREATE` and `USAGE`; `table_grants` accepts `SELECT`, `INSERT`, `UPDATE`, and `DELETE`. They are reconciled for the configured role. An omitted `schema` applies to every non-system schema in the database. A configured role cannot manage grants on a schema it owns.
+`grants` accepts `CREATE` and `USAGE`, the complete set of PostgreSQL schema privileges. `table_grants` accepts `SELECT`, `INSERT`, `UPDATE`, `DELETE`, `TRUNCATE`, `REFERENCES`, `TRIGGER`, and `MAINTAIN`. Either list also accepts the single value `ALL`, which cannot be combined with named privileges. They are reconciled for the configured role. An omitted `schema` applies to every non-system schema in the database. A configured role cannot manage grants on a schema it owns.
+
+Sequence privileges are not declared directly, they follow from `table_grants`. `INSERT` also grants `USAGE` on the schema's sequences, and `ALL` grants `ALL`, because PostgreSQL treats sequences as a separate object class: without this a role holding `INSERT` still cannot insert into a table with a `serial` column. Columns declared `generated always as identity` need no sequence privilege.
+
+Grants are applied to the objects that exist at reconcile time and registered as default privileges for the schema owner, so objects that owner creates later are covered without a restart. Objects created by any other role are covered at the next reconcile.
 
 The supervisor always adds `local all all trust` for its local reconciliation connection. If `hba` is omitted, it also permits remote `scram-sha-256` access. PostgreSQL, pgBackRest, and supervisor logs go to container stdout.
 

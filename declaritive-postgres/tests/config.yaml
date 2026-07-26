@@ -49,3 +49,4 @@ databases:
       - app
     extensions:
       - pgcrypto
+  - name: unowned

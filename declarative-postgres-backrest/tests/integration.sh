@@ -145,12 +145,17 @@ docker exec "$primary" psql -U integration_admin -d app -tAc 'show unix_socket_d
 docker exec "$primary" psql -U integration_admin -d app -tAc "select has_schema_privilege('reader_one', 'app', 'USAGE')" | grep -qx t
 docker exec "$primary" psql -U integration_admin -d app -tAc "select exists(select 1 from pg_namespace where nspname = 'app')" | grep -qx t
 docker exec "$primary" psql -U integration_admin -d app -tAc "select exists(select 1 from pg_extension where extname = 'pgcrypto')" | grep -qx t
+docker exec "$primary" psql -U integration_admin -d app -tAc "select pg_get_userbyid(datdba) from pg_database where datname = 'unowned'" | grep -qx integration_admin
 psql_as app_owner owner-password -c "create table app.records (id integer primary key, value text not null); insert into app.records values (1, 'present');" >/dev/null
 psql_as reader_one reader-one-password -tAc 'select value from app.records where id = 1' | grep -qx present
 psql_as reader_two reader-two-password -tAc 'select value from app.records where id = 1' | grep -qx present
 must_fail psql_as reader_one reader-one-password -c "insert into app.records values (2, 'denied')"
 must_fail psql_as reader_one reader-one-password -c "create table app.denied (id integer)"
 psql_as app_writer writer-password -c "insert into app.records values (2, 'written'); update app.records set value = 'updated' where id = 2; delete from app.records where id = 2;" >/dev/null
+psql_as app_owner owner-password -c "create table app.serial_records (id serial primary key, value text not null);" >/dev/null
+psql_as app_writer writer-password -c "insert into app.serial_records (value) values ('sequenced')" >/dev/null
+psql_as reader_one reader-one-password -tAc 'select value from app.serial_records where id = 1' | grep -qx sequenced
+must_fail psql_as reader_one reader-one-password -c "insert into app.serial_records (value) values ('denied')"
 
 docker exec "$primary" psql -U integration_admin -d app -tAc "select pg_get_userbyid(datdba) from pg_database where datname = 'app'" | grep -qx app_owner
 docker exec "$primary" psql -U integration_admin -d app -c 'alter database app owner to integration_admin' >/dev/null
@@ -197,6 +202,7 @@ must_fail psql_as reader_one rotated-reader-one-password -tAc 'select value from
 docker exec "$primary" psql -U integration_admin -d app -tAc "select has_schema_privilege('reader_one', 'app', 'USAGE')" | grep -qx f
 psql_as reader_two reader-two-password -tAc 'select value from app.records where id = 1' | grep -qx present
 psql_as app_writer rotated-writer-password -c "insert into app.records values (2, 'written'); update app.records set value = 'updated' where id = 2;" >/dev/null
+psql_as app_writer rotated-writer-password -c "insert into app.serial_records (value) values ('sequenced again')" >/dev/null
 must_fail psql_as app_writer rotated-writer-password -c 'delete from app.records where id = 2'
 psql_as audit_reader audit-reader-password -tAc 'select value from app.records where id = 2' | grep -qx updated
 psql_as app_owner owner-password -c "create table app.reconciled_records (id integer primary key, value text not null); insert into app.reconciled_records values (1, 'reconciled');" >/dev/null

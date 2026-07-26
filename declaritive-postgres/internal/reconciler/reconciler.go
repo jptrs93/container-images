@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 
@@ -46,8 +47,14 @@ func Reconcile(ctx context.Context, cfg config.Config, initDB *config.InitDBOpti
 		}
 	}
 
+	// An omitted owner leaves the database with the bootstrap superuser, which is
+	// also the role the supervisor reconciles as.
+	defaultOwner := supervisorUser
+	if defaultOwner == "" {
+		defaultOwner = "postgres"
+	}
 	for _, database := range cfg.Databases {
-		if err := ensureDatabase(ctx, admin, adminURL, database); err != nil {
+		if err := ensureDatabase(ctx, admin, adminURL, database, defaultOwner); err != nil {
 			return err
 		}
 	}
@@ -106,7 +113,14 @@ func resetPermissions(ctx context.Context, adminURL, role string, databases []co
 				if _, err = conn.Exec(ctx, "revoke all privileges on all tables in schema "+identifier(schema)+" from "+identifier(role)); err != nil {
 					break
 				}
+				if _, err = conn.Exec(ctx, "revoke all privileges on all sequences in schema "+identifier(schema)+" from "+identifier(role)); err != nil {
+					break
+				}
 				_, err = conn.Exec(ctx, "alter default privileges for role "+identifier(owner)+" in schema "+identifier(schema)+" revoke all on tables from "+identifier(role))
+				if err != nil {
+					break
+				}
+				_, err = conn.Exec(ctx, "alter default privileges for role "+identifier(owner)+" in schema "+identifier(schema)+" revoke all on sequences from "+identifier(role))
 				if err != nil {
 					break
 				}
@@ -147,12 +161,15 @@ func setRolePassword(ctx context.Context, conn *pgx.Conn, name, password string)
 	return err
 }
 
-func ensureDatabase(ctx context.Context, conn *pgx.Conn, adminURL string, database config.Database) error {
-	if database.Name == "" || database.Owner == "" {
-		return fmt.Errorf("database name and owner are required")
+func ensureDatabase(ctx context.Context, conn *pgx.Conn, adminURL string, database config.Database, defaultOwner string) error {
+	if database.Name == "" {
+		return fmt.Errorf("database name is required")
 	}
 	name := string(database.Name)
 	owner := string(database.Owner)
+	if owner == "" {
+		owner = defaultOwner
+	}
 
 	var exists bool
 	if err := conn.QueryRow(ctx, "select exists(select 1 from pg_database where datname = $1)", name).Scan(&exists); err != nil {
@@ -239,22 +256,51 @@ func applyPermission(ctx context.Context, adminURL, role string, permission conf
 				return fmt.Errorf("grant on schema %q in database %q: %w", schema, database, err)
 			}
 		}
-		if len(permission.TableGrants) != 0 {
-			statement := "grant " + strings.Join(permission.TableGrants, ", ") + " on all tables in schema " + identifier(schema) + " to " + identifier(role)
-			if _, err := conn.Exec(ctx, statement); err != nil {
-				return fmt.Errorf("grant on tables in schema %q in database %q: %w", schema, database, err)
-			}
-			owner, err := schemaOwner(ctx, conn, database, schema)
-			if err != nil {
-				return err
-			}
-			statement = "alter default privileges for role " + identifier(owner) + " in schema " + identifier(schema) + " grant " + strings.Join(permission.TableGrants, ", ") + " on tables to " + identifier(role)
-			if _, err := conn.Exec(ctx, statement); err != nil {
-				return fmt.Errorf("grant default table privileges in schema %q in database %q: %w", schema, database, err)
-			}
+		if len(permission.TableGrants) == 0 {
+			continue
+		}
+		grants := strings.Join(permission.TableGrants, ", ")
+		statement := "grant " + grants + " on all tables in schema " + identifier(schema) + " to " + identifier(role)
+		if _, err := conn.Exec(ctx, statement); err != nil {
+			return fmt.Errorf("grant on tables in schema %q in database %q: %w", schema, database, err)
+		}
+		owner, err := schemaOwner(ctx, conn, database, schema)
+		if err != nil {
+			return err
+		}
+		statement = "alter default privileges for role " + identifier(owner) + " in schema " + identifier(schema) + " grant " + grants + " on tables to " + identifier(role)
+		if _, err := conn.Exec(ctx, statement); err != nil {
+			return fmt.Errorf("grant default table privileges in schema %q in database %q: %w", schema, database, err)
+		}
+
+		sequenceGrants := sequencePrivileges(permission.TableGrants)
+		if sequenceGrants == "" {
+			continue
+		}
+		statement = "grant " + sequenceGrants + " on all sequences in schema " + identifier(schema) + " to " + identifier(role)
+		if _, err := conn.Exec(ctx, statement); err != nil {
+			return fmt.Errorf("grant on sequences in schema %q in database %q: %w", schema, database, err)
+		}
+		statement = "alter default privileges for role " + identifier(owner) + " in schema " + identifier(schema) + " grant " + sequenceGrants + " on sequences to " + identifier(role)
+		if _, err := conn.Exec(ctx, statement); err != nil {
+			return fmt.Errorf("grant default sequence privileges in schema %q in database %q: %w", schema, database, err)
 		}
 	}
 	return nil
+}
+
+// sequencePrivileges reports the sequence privileges implied by a set of table
+// grants. PostgreSQL treats sequences as a separate object class, so a role
+// holding INSERT on a table with a serial column still cannot insert into it
+// without USAGE on the sequence behind that column.
+func sequencePrivileges(tableGrants []string) string {
+	if slices.Contains(tableGrants, "ALL") {
+		return "ALL"
+	}
+	if slices.Contains(tableGrants, "INSERT") {
+		return "USAGE"
+	}
+	return ""
 }
 
 func nonSystemSchemas(ctx context.Context, conn *pgx.Conn, database string) ([]string, error) {

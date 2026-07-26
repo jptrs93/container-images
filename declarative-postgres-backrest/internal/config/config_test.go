@@ -205,6 +205,53 @@ func TestValidateRejectsGrantsForSchemaOwner(t *testing.T) {
 	}
 }
 
+func TestPermissionValidateAcceptsExpandedGrants(t *testing.T) {
+	permission := Permission{
+		Database:    "app",
+		Grants:      []string{"CREATE", "USAGE"},
+		TableGrants: []string{"SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER", "MAINTAIN"},
+	}
+	if err := permission.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+	for _, grants := range [][]string{{"ALL"}} {
+		if err := (Permission{Database: "app", TableGrants: grants}).Validate(); err != nil {
+			t.Fatalf("Validate() with %v error = %v", grants, err)
+		}
+		if err := (Permission{Database: "app", Grants: grants}).Validate(); err != nil {
+			t.Fatalf("Validate() with schema grants %v error = %v", grants, err)
+		}
+	}
+}
+
+func TestPermissionValidateRejectsBadGrants(t *testing.T) {
+	for name, testCase := range map[string]struct {
+		permission Permission
+		want       string
+	}{
+		"unknown table grant":   {Permission{Database: "app", TableGrants: []string{"SELECT", "DROP"}}, `unsupported table grant "DROP"`},
+		"unknown schema grant":  {Permission{Database: "app", Grants: []string{"SELECT"}}, `unsupported schema grant "SELECT"`},
+		"table ALL combined":    {Permission{Database: "app", TableGrants: []string{"ALL", "SELECT"}}, "table grant ALL cannot be combined"},
+		"schema ALL combined":   {Permission{Database: "app", Grants: []string{"ALL", "USAGE"}}, "schema grant ALL cannot be combined"},
+		"duplicate table grant": {Permission{Database: "app", TableGrants: []string{"SELECT", "SELECT"}}, `table grant "SELECT" is declared more than once`},
+		"lowercase grant":       {Permission{Database: "app", TableGrants: []string{"select"}}, `unsupported table grant "select"`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := testCase.permission.Validate()
+			if err == nil || !strings.Contains(err.Error(), testCase.want) {
+				t.Fatalf("Validate() error = %v, want %q", err, testCase.want)
+			}
+		})
+	}
+}
+
+func TestValidateAllowsOmittedDatabaseOwner(t *testing.T) {
+	cfg := Config{Databases: []Database{{Name: "app"}}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v, want omitted owner to be accepted", err)
+	}
+}
+
 func TestLoadRejectsMultipleYAMLDocuments(t *testing.T) {
 	path := t.TempDir() + "/config.yaml"
 	if err := os.WriteFile(path, []byte("settings:\n  max_connections: 10\n---\nsettings:\n  max_connections: 20\n"), 0600); err != nil {
@@ -227,9 +274,9 @@ func TestValidateRejectsDuplicateRolesAndIncompleteDatabases(t *testing.T) {
 			message: "declared more than once",
 		},
 		{
-			name:    "missing database owner",
-			cfg:     Config{Databases: []Database{{Name: "app"}}},
-			message: "databases[0].owner is required",
+			name:    "missing database name",
+			cfg:     Config{Databases: []Database{{Owner: "owner"}}},
+			message: "databases[0].name is required",
 		},
 		{
 			name:    "empty schema",

@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -212,9 +213,6 @@ func (cfg *Config) Validate() error {
 		if err != nil {
 			return err
 		}
-		if _, err := database.Owner.Required(fmt.Sprintf("databases[%d].owner", databaseIndex)); err != nil {
-			return err
-		}
 		if _, exists := databaseNames[name]; exists {
 			return fmt.Errorf("databases[%d].name %q is declared more than once", databaseIndex, name)
 		}
@@ -254,19 +252,41 @@ func (cfg *Config) Validate() error {
 	return nil
 }
 
+// schemaGrants and tableGrants are the privileges PostgreSQL defines for each
+// object class. Sequence privileges are not declared directly: they follow from
+// the table grants, because a role that can INSERT also needs to draw from the
+// sequences behind any serial column.
+var (
+	schemaGrants = []string{"CREATE", "USAGE"}
+	tableGrants  = []string{"SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER", "MAINTAIN"}
+)
+
 func (permission Permission) Validate() error {
 	if permission.Database == "" || (len(permission.Grants) == 0 && len(permission.TableGrants) == 0) {
 		return fmt.Errorf("database and at least one grant are required")
 	}
-	for _, grant := range permission.Grants {
-		if grant != "CREATE" && grant != "USAGE" {
-			return fmt.Errorf("unsupported schema grant %q", grant)
-		}
+	if err := validateGrants("schema", permission.Grants, schemaGrants); err != nil {
+		return err
 	}
-	for _, grant := range permission.TableGrants {
-		if grant != "SELECT" && grant != "INSERT" && grant != "UPDATE" && grant != "DELETE" {
-			return fmt.Errorf("unsupported table grant %q", grant)
+	return validateGrants("table", permission.TableGrants, tableGrants)
+}
+
+// validateGrants accepts any combination of the supported privileges, or the
+// single value ALL. Mixing ALL with named privileges is rejected rather than
+// silently treated as ALL, so the YAML always states one intent.
+func validateGrants(class string, grants, supported []string) error {
+	seen := make(map[string]struct{}, len(grants))
+	for _, grant := range grants {
+		if grant != "ALL" && !slices.Contains(supported, grant) {
+			return fmt.Errorf("unsupported %s grant %q", class, grant)
 		}
+		if _, exists := seen[grant]; exists {
+			return fmt.Errorf("%s grant %q is declared more than once", class, grant)
+		}
+		seen[grant] = struct{}{}
+	}
+	if _, exists := seen["ALL"]; exists && len(grants) > 1 {
+		return fmt.Errorf("%s grant ALL cannot be combined with other privileges", class)
 	}
 	return nil
 }
