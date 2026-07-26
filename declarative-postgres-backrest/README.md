@@ -154,6 +154,8 @@ databases:
 
 The supervisor creates missing roles, databases, schemas, and extensions. Declared role passwords are updated; omitted passwords are left unchanged. Roles, databases, schemas, and extensions removed from YAML are not deleted.
 
+`owner` is reconciled on every startup, not only at creation: a database or declared schema whose owner has drifted from the YAML is handed back to the declared role. Changing `owner` does not transfer ownership of tables, sequences, or other objects already inside the database, which stay with their original owner. Use `REASSIGN OWNED BY <old> TO <new>` to move those.
+
 `grants` accepts `CREATE` and `USAGE`; `table_grants` accepts `SELECT`, `INSERT`, `UPDATE`, and `DELETE`. They are reconciled for the configured role. An omitted `schema` applies to every non-system schema in the database. A configured role cannot manage grants on a schema it owns.
 
 The supervisor always adds `local all all trust` for its local reconciliation connection. If `hba` is omitted, it also permits remote `scram-sha-256` access. PostgreSQL, pgBackRest, and supervisor logs go to container stdout.

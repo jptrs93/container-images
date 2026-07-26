@@ -162,6 +162,16 @@ func ensureDatabase(ctx context.Context, conn *pgx.Conn, adminURL string, databa
 		if _, err := conn.Exec(ctx, "create database "+identifier(name)+" owner "+identifier(owner)); err != nil {
 			return fmt.Errorf("create database %q: %w", name, err)
 		}
+	} else {
+		var currentOwner string
+		if err := conn.QueryRow(ctx, "select pg_get_userbyid(datdba) from pg_database where datname = $1", name).Scan(&currentOwner); err != nil {
+			return fmt.Errorf("get owner of database %q: %w", name, err)
+		}
+		if currentOwner != owner {
+			if _, err := conn.Exec(ctx, "alter database "+identifier(name)+" owner to "+identifier(owner)); err != nil {
+				return fmt.Errorf("set owner of database %q to %q: %w", name, owner, err)
+			}
+		}
 	}
 
 	targetURL := databaseURL(adminURL, name)
@@ -178,6 +188,16 @@ func ensureDatabase(ctx context.Context, conn *pgx.Conn, adminURL string, databa
 		statement := "create schema if not exists " + identifier(string(schema)) + " authorization " + identifier(owner)
 		if _, err := databaseConn.Exec(ctx, statement); err != nil {
 			return fmt.Errorf("create schema %q in database %q: %w", schema, name, err)
+		}
+		currentOwner, err := schemaOwner(ctx, databaseConn, name, string(schema))
+		if err != nil {
+			return err
+		}
+		if currentOwner != owner {
+			statement = "alter schema " + identifier(string(schema)) + " owner to " + identifier(owner)
+			if _, err := databaseConn.Exec(ctx, statement); err != nil {
+				return fmt.Errorf("set owner of schema %q in database %q to %q: %w", schema, name, owner, err)
+			}
 		}
 	}
 	for _, extension := range database.Extensions {
@@ -258,9 +278,19 @@ func nonSystemSchemas(ctx context.Context, conn *pgx.Conn, database string) ([]s
 	return schemas, nil
 }
 
+// schemaOwner reports the role that effectively owns a schema. Schemas owned by
+// the implicit pg_database_owner role - which is how PostgreSQL 15 and later
+// leave the public schema - resolve to the current owner of the database, since
+// that is the role that owns the objects created in them.
 func schemaOwner(ctx context.Context, conn *pgx.Conn, database, schema string) (string, error) {
+	const query = `select case
+	when pg_namespace.nspowner = 'pg_database_owner'::regrole
+	then (select pg_get_userbyid(datdba) from pg_database where datname = current_database())
+	else pg_get_userbyid(pg_namespace.nspowner)
+end from pg_namespace where nspname = $1`
+
 	var owner string
-	if err := conn.QueryRow(ctx, "select rolname from pg_namespace join pg_roles on pg_roles.oid = pg_namespace.nspowner where nspname = $1", schema).Scan(&owner); err != nil {
+	if err := conn.QueryRow(ctx, query, schema).Scan(&owner); err != nil {
 		return "", fmt.Errorf("get owner of schema %q in database %q: %w", schema, database, err)
 	}
 	return owner, nil

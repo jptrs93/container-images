@@ -73,20 +73,20 @@ docker run -d --name "$invalid" --volume "$invalid_config_file":/etc/postgres-su
 wait_for invalid-config-exit container_stopped "$invalid"
 invalid_exit_code="$(docker wait "$invalid")"
 test "$invalid_exit_code" -ne 0
-docker logs "$invalid" | grep -q 'cannot manage grants on schema'
+grep -q 'cannot manage grants on schema' <<<"$(docker logs "$invalid" 2>&1)"
 
 docker run -d --name "$invalid_pgbackrest" --volume "$invalid_pgbackrest_config_file":/etc/postgres-supervisor/config.yaml:ro "$image" >/dev/null
 wait_for invalid-pgbackrest-config-exit container_stopped "$invalid_pgbackrest"
 invalid_pgbackrest_exit_code="$(docker wait "$invalid_pgbackrest")"
 test "$invalid_pgbackrest_exit_code" -ne 0
-docker logs "$invalid_pgbackrest" | grep -q 'pgbackrest.s3.host must be set'
+grep -q 'pgbackrest.s3.host must be set' <<<"$(docker logs "$invalid_pgbackrest" 2>&1)"
 
 docker run -d --name "$reconciliation_failure" --tmpfs /var/lib/postgresql \
     --volume "$reconciliation_failure_config_file":/etc/postgres-supervisor/config.yaml:ro "$image" >/dev/null
 wait_for reconciliation-failure-exit container_stopped "$reconciliation_failure"
 reconciliation_failure_exit_code="$(docker wait "$reconciliation_failure")"
 test "$reconciliation_failure_exit_code" -ne 0
-docker logs "$reconciliation_failure" | grep -q 'PostgreSQL reconciliation failed'
+grep -q 'PostgreSQL reconciliation failed' <<<"$(docker logs "$reconciliation_failure" 2>&1)"
 
 docker run -d --name "$file_user" --tmpfs /var/lib/postgresql \
     -e POSTGRES_USER_FILE=/run/secrets/postgres-user -e POSTGRES_PASSWORD=integration-password \
@@ -152,6 +152,10 @@ must_fail psql_as reader_one reader-one-password -c "insert into app.records val
 must_fail psql_as reader_one reader-one-password -c "create table app.denied (id integer)"
 psql_as app_writer writer-password -c "insert into app.records values (2, 'written'); update app.records set value = 'updated' where id = 2; delete from app.records where id = 2;" >/dev/null
 
+docker exec "$primary" psql -U integration_admin -d app -tAc "select pg_get_userbyid(datdba) from pg_database where datname = 'app'" | grep -qx app_owner
+docker exec "$primary" psql -U integration_admin -d app -c 'alter database app owner to integration_admin' >/dev/null
+docker exec "$primary" psql -U integration_admin -d app -c 'alter schema app owner to integration_admin' >/dev/null
+
 docker stop "$primary" >/dev/null
 test "$(docker inspect -f '{{.State.ExitCode}}' "$primary")" -eq 0
 docker rm "$primary" >/dev/null
@@ -183,6 +187,8 @@ if docker exec "$primary" bash -c "PGPASSWORD=postgres-password psql -h 127.0.0.
 fi
 docker exec "$primary" bash -c "PGPASSWORD=rotated-postgres-password psql -h 127.0.0.1 -U integration_admin -d app -tAc 'select 1'" | grep -qx 1
 docker exec "$primary" psql -U integration_admin -d app -tAc 'show max_connections' | grep -qx 75
+docker exec "$primary" psql -U integration_admin -d app -tAc "select pg_get_userbyid(datdba) from pg_database where datname = 'app'" | grep -qx app_owner
+docker exec "$primary" psql -U integration_admin -d app -tAc "select pg_get_userbyid(nspowner) from pg_namespace where nspname = 'app'" | grep -qx app_owner
 docker exec "$primary" psql -U integration_admin -d app -tAc "select exists(select 1 from pg_namespace where nspname = 'analytics')" | grep -qx t
 must_fail psql_as reader_one reader-one-password -tAc 'select 1'
 must_fail psql_as app_writer writer-password -tAc 'select 1'
