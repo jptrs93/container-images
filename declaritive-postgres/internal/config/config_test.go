@@ -228,7 +228,7 @@ func TestValidateAllowsOmittedDatabaseOwner(t *testing.T) {
 func TestValidateGrantedRoles(t *testing.T) {
 	valid := Config{Roles: []Role{
 		{Name: "app_owners"},
-		{Name: "alice", Roles: []MaybeEnv{"app_owners", "pg_read_all_data"}},
+		{Name: "alice", Roles: []MaybeEnv{"app_owners"}, DefaultRoles: []MaybeEnv{"pg_read_all_data"}},
 	}}
 	if err := valid.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v", err)
@@ -243,7 +243,7 @@ func TestValidateGrantedRoles(t *testing.T) {
 			"cannot be granted to itself",
 		},
 		"pg_database_owner": {
-			Config{Roles: []Role{{Name: "alice", Roles: []MaybeEnv{"pg_database_owner"}}}},
+			Config{Roles: []Role{{Name: "alice", DefaultRoles: []MaybeEnv{"pg_database_owner"}}}},
 			"pg_database_owner cannot have explicit members",
 		},
 		"duplicate": {
@@ -253,6 +253,18 @@ func TestValidateGrantedRoles(t *testing.T) {
 		"empty entry": {
 			Config{Roles: []Role{{Name: "alice", Roles: []MaybeEnv{""}}}},
 			"roles[0].roles[0] is required",
+		},
+		"predefined role in roles": {
+			Config{Roles: []Role{{Name: "alice", Roles: []MaybeEnv{"pg_read_all_data"}}}},
+			"is a PostgreSQL predefined role, declare it under default_roles",
+		},
+		"user role in default_roles": {
+			Config{Roles: []Role{{Name: "alice", DefaultRoles: []MaybeEnv{"app_owners"}}}},
+			"is not a PostgreSQL predefined role, declare it under roles",
+		},
+		"duplicate across both lists": {
+			Config{Roles: []Role{{Name: "alice", Roles: []MaybeEnv{"app_owners"}, DefaultRoles: []MaybeEnv{"app_owners"}}}},
+			"is not a PostgreSQL predefined role",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -267,7 +279,7 @@ func TestValidateGrantedRoles(t *testing.T) {
 func TestLoadResolvesGrantedRoles(t *testing.T) {
 	t.Setenv("TEST_GROUP", "app_owners")
 	path := t.TempDir() + "/config.yaml"
-	contents := "roles:\n  - name: alice\n    roles:\n      - ${TEST_GROUP}\n      - ${TEST_MISSING:-pg_read_all_data}\n"
+	contents := "roles:\n  - name: alice\n    roles:\n      - ${TEST_GROUP}\n    default_roles:\n      - ${TEST_MISSING:-pg_read_all_data}\n"
 	if err := os.WriteFile(path, []byte(contents), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -275,20 +287,19 @@ func TestLoadResolvesGrantedRoles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if cfg.Roles[0].Roles[0] != "app_owners" || cfg.Roles[0].Roles[1] != "pg_read_all_data" {
-		t.Fatalf("resolved roles = %v", cfg.Roles[0].Roles)
+	if cfg.Roles[0].Roles[0] != "app_owners" || cfg.Roles[0].DefaultRoles[0] != "pg_read_all_data" {
+		t.Fatalf("resolved roles = %v %v", cfg.Roles[0].Roles, cfg.Roles[0].DefaultRoles)
 	}
 }
 
-func TestRoleCanLoginDefaultsToTrue(t *testing.T) {
-	yes, no := true, false
+func TestRoleCanLoginUnlessNoLogin(t *testing.T) {
 	for name, testCase := range map[string]struct {
 		role Role
 		want bool
 	}{
-		"omitted":        {Role{Name: "app"}, true},
-		"explicit true":  {Role{Name: "app", Login: &yes}, true},
-		"explicit false": {Role{Name: "app", Login: &no}, false},
+		"omitted":       {Role{Name: "app"}, true},
+		"nologin false": {Role{Name: "app", NoLogin: false}, true},
+		"nologin true":  {Role{Name: "app", NoLogin: true}, false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if got := testCase.role.CanLogin(); got != testCase.want {
@@ -299,12 +310,11 @@ func TestRoleCanLoginDefaultsToTrue(t *testing.T) {
 }
 
 func TestValidateRejectsPasswordOnNoLoginRole(t *testing.T) {
-	no := false
-	cfg := Config{Roles: []Role{{Name: "app_read", Login: &no, Password: "secret"}}}
+	cfg := Config{Roles: []Role{{Name: "app_read", NoLogin: true, Password: "secret"}}}
 	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "which cannot log in") {
 		t.Fatalf("Validate() error = %v, want password-on-nologin error", err)
 	}
-	cfg = Config{Roles: []Role{{Name: "app_read", Login: &no}}}
+	cfg = Config{Roles: []Role{{Name: "app_read", NoLogin: true}}}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v, want passwordless nologin role to be accepted", err)
 	}

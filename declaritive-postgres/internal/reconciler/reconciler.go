@@ -53,13 +53,20 @@ func Reconcile(ctx context.Context, cfg config.Config, initDB *config.InitDBOpti
 		if err != nil {
 			return err
 		}
-		groups := make([]string, 0, len(role.Roles))
-		for grantedIndex, member := range role.Roles {
-			group, err := member.Required(fmt.Sprintf("roles[%d].roles[%d]", index, grantedIndex))
-			if err != nil {
-				return err
+		// The two lists differ only in what they document: PostgreSQL has one
+		// membership mechanism, so they are reconciled as a single set.
+		groups := make([]string, 0, len(role.Roles)+len(role.DefaultRoles))
+		for _, list := range []struct {
+			field   string
+			entries []config.MaybeEnv
+		}{{"roles", role.Roles}, {"default_roles", role.DefaultRoles}} {
+			for grantedIndex, member := range list.entries {
+				group, err := member.Required(fmt.Sprintf("roles[%d].%s[%d]", index, list.field, grantedIndex))
+				if err != nil {
+					return err
+				}
+				groups = append(groups, group)
 			}
-			groups = append(groups, group)
 		}
 		if err := ensureRoleMemberships(ctx, admin, name, groups); err != nil {
 			return err

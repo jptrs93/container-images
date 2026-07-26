@@ -30,18 +30,19 @@ type Config struct {
 type MaybeEnv string
 
 type Role struct {
-	Name        MaybeEnv     `yaml:"name"`
-	Password    MaybeEnv     `yaml:"password"`
-	Login       *bool        `yaml:"login"`
-	Roles       []MaybeEnv   `yaml:"roles"`
-	Permissions []Permission `yaml:"permissions"`
+	Name         MaybeEnv     `yaml:"name"`
+	Password     MaybeEnv     `yaml:"password"`
+	NoLogin      bool         `yaml:"nologin"`
+	Roles        []MaybeEnv   `yaml:"roles"`
+	DefaultRoles []MaybeEnv   `yaml:"default_roles"`
+	Permissions  []Permission `yaml:"permissions"`
 }
 
 // CanLogin reports whether a role should hold the LOGIN attribute. Roles log in
 // unless they say otherwise, which keeps a plain name-and-password declaration
 // meaning what it always has.
 func (role Role) CanLogin() bool {
-	return role.Login == nil || *role.Login
+	return !role.NoLogin
 }
 
 type Permission struct {
@@ -204,7 +205,7 @@ func (cfg *Config) Validate() error {
 		if !role.CanLogin() && role.Password.Configured() {
 			return fmt.Errorf("roles[%d].password is set on %q, which cannot log in", roleIndex, name)
 		}
-		if err := validateGrantedRoles(roleIndex, name, role.Roles); err != nil {
+		if err := validateGrantedRoles(roleIndex, name, role.Roles, role.DefaultRoles); err != nil {
 			return err
 		}
 		for permissionIndex, permission := range role.Permissions {
@@ -286,25 +287,43 @@ var (
 // validateGrantedRoles rejects memberships PostgreSQL would refuse at reconcile
 // time, so a bad declaration fails while parsing the config rather than
 // crash-looping the container once the cluster is already running.
-func validateGrantedRoles(roleIndex int, name string, granted []MaybeEnv) error {
-	seen := make(map[string]struct{}, len(granted))
-	for grantedIndex, member := range granted {
-		group, err := member.Required(fmt.Sprintf("roles[%d].roles[%d]", roleIndex, grantedIndex))
-		if err != nil {
-			return err
+//
+// PostgreSQL reserves the pg_ prefix for its own predefined roles and refuses to
+// create anything else with it, so the prefix separates the two lists exactly:
+// roles holds what this configuration defines, default_roles holds what the
+// server ships. Keeping them apart makes a config state which of its privileges
+// come from PostgreSQL itself.
+func validateGrantedRoles(roleIndex int, name string, granted, predefined []MaybeEnv) error {
+	seen := make(map[string]struct{}, len(granted)+len(predefined))
+	check := func(field string, entries []MaybeEnv, wantPredefined bool) error {
+		for entryIndex, entry := range entries {
+			group, err := entry.Required(fmt.Sprintf("roles[%d].%s[%d]", roleIndex, field, entryIndex))
+			if err != nil {
+				return err
+			}
+			switch isPredefined := strings.HasPrefix(group, "pg_"); {
+			case isPredefined && !wantPredefined:
+				return fmt.Errorf("roles[%d].%s[%d] %q is a PostgreSQL predefined role, declare it under default_roles", roleIndex, field, entryIndex, group)
+			case !isPredefined && wantPredefined:
+				return fmt.Errorf("roles[%d].%s[%d] %q is not a PostgreSQL predefined role, declare it under roles", roleIndex, field, entryIndex, group)
+			}
+			if group == name {
+				return fmt.Errorf("roles[%d].%s[%d] %q cannot be granted to itself", roleIndex, field, entryIndex, group)
+			}
+			if group == "pg_database_owner" {
+				return fmt.Errorf("roles[%d].%s[%d] pg_database_owner cannot have explicit members, set it as a database owner instead", roleIndex, field, entryIndex)
+			}
+			if _, exists := seen[group]; exists {
+				return fmt.Errorf("roles[%d].%s[%d] %q is declared more than once", roleIndex, field, entryIndex, group)
+			}
+			seen[group] = struct{}{}
 		}
-		if group == name {
-			return fmt.Errorf("roles[%d].roles[%d] %q cannot be granted to itself", roleIndex, grantedIndex, group)
-		}
-		if group == "pg_database_owner" {
-			return fmt.Errorf("roles[%d].roles[%d] pg_database_owner cannot have explicit members, set it as a database owner instead", roleIndex, grantedIndex)
-		}
-		if _, exists := seen[group]; exists {
-			return fmt.Errorf("roles[%d].roles[%d] %q is declared more than once", roleIndex, grantedIndex, group)
-		}
-		seen[group] = struct{}{}
+		return nil
 	}
-	return nil
+	if err := check("roles", granted, false); err != nil {
+		return err
+	}
+	return check("default_roles", predefined, true)
 }
 
 func (permission Permission) Validate() error {
@@ -639,6 +658,11 @@ func (cfg *Config) resolveEnvironmentReferences() error {
 		}
 		for grantedIndex := range role.Roles {
 			if err := resolve(fmt.Sprintf("roles[%d].roles[%d]", roleIndex, grantedIndex), &role.Roles[grantedIndex]); err != nil {
+				return err
+			}
+		}
+		for grantedIndex := range role.DefaultRoles {
+			if err := resolve(fmt.Sprintf("roles[%d].default_roles[%d]", roleIndex, grantedIndex), &role.DefaultRoles[grantedIndex]); err != nil {
 				return err
 			}
 		}

@@ -62,10 +62,10 @@ roles:
           - USAGE
   - name: group_reader
     password: ${INTEGRATION_GROUP_READER_PASSWORD}
-    roles:
+    default_roles:
       - pg_read_all_data
   - name: app_read
-    login: false
+    nologin: true
     permissions:
       - database: app
         schema: app
