@@ -30,6 +30,9 @@ func TestWritePostgresFilesUsesConnectionDefaultsAndOverrides(t *testing.T) {
 			}
 		})
 	}
+	if cfg.Settings["listen_addresses"] != "localhost" || cfg.Settings["Port"] != "5433" || cfg.Settings["unix_socket_directories"] != "/tmp/postgres" {
+		t.Fatalf("configured connection settings changed: %#v", cfg.Settings)
+	}
 	connection := cfg.ConnectionOptions()
 	if connection.ListenAddresses != "localhost" || connection.Port != "5433" || connection.SocketDirectories != "/tmp/postgres" || connection.SocketDirectory != "/tmp/postgres" {
 		t.Fatalf("connection options = %#v", connection)
