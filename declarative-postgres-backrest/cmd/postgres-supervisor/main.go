@@ -221,12 +221,14 @@ func reconcileAndBackup(ctx context.Context, cfg config.Config, initDB *config.I
 	if err := waitForPostgres(ctx, connection, adminUser); err != nil {
 		return err
 	}
-	if err := reconciler.Reconcile(ctx, cfg, initDB, connection, adminUser); err != nil {
+	summary, err := reconciler.Reconcile(ctx, cfg, initDB, connection, adminUser)
+	if err != nil {
 		return err
 	}
 	if err := status.Write(supervisorStatePath, "healthy"); err != nil {
 		return fmt.Errorf("write successful reconciliation state: %w", err)
 	}
+	log.Printf("PostgreSQL reconciliation complete: %s", summary)
 	if manager != nil && backupEnabled {
 		manager.Start(ctx)
 	}

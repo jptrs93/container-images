@@ -154,3 +154,16 @@ func TestRenderPrivileges(t *testing.T) {
 		t.Fatalf("renderPrivileges() = %q, want CREATE,USAGE", got)
 	}
 }
+
+// The summary is the only thing a successful run says, so a no-op restart and a
+// rewrite have to read differently.
+func TestSummaryString(t *testing.T) {
+	unchanged := Summary{Roles: 4, Databases: 2}
+	if got := unchanged.String(); got != "4 roles, 2 databases, privileges unchanged" {
+		t.Fatalf("Summary.String() = %q", got)
+	}
+	rewritten := Summary{Roles: 4, Databases: 2, PrivilegesRewritten: true}
+	if got := rewritten.String(); got != "4 roles, 2 databases, privileges rewritten" {
+		t.Fatalf("Summary.String() = %q", got)
+	}
+}

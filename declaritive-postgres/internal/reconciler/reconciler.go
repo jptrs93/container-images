@@ -12,7 +12,25 @@ import (
 	"github.com/jptrs93/container-images/declaritive-postgres/internal/config"
 )
 
-func Reconcile(ctx context.Context, cfg config.Config, initDB *config.InitDBOptions, connection config.ConnectionOptions, supervisorUser string) error {
+// Summary describes the scope of one reconciliation run and whether it had to
+// change any privileges. Reconciliation is otherwise silent, so this is what a
+// successful run has to say for itself.
+type Summary struct {
+	Roles               int
+	Databases           int
+	PrivilegesRewritten bool
+}
+
+func (summary Summary) String() string {
+	privileges := "privileges unchanged"
+	if summary.PrivilegesRewritten {
+		privileges = "privileges rewritten"
+	}
+	return fmt.Sprintf("%d roles, %d databases, %s", summary.Roles, summary.Databases, privileges)
+}
+
+func Reconcile(ctx context.Context, cfg config.Config, initDB *config.InitDBOptions, connection config.ConnectionOptions, supervisorUser string) (Summary, error) {
+	summary := Summary{Roles: len(cfg.Roles), Databases: len(cfg.Databases)}
 	adminURL := os.Getenv("POSTGRES_SUPERVISOR_ADMIN_URL")
 	if adminURL == "" {
 		adminURL = socketURL(supervisorUser, "postgres", connection)
@@ -20,29 +38,29 @@ func Reconcile(ctx context.Context, cfg config.Config, initDB *config.InitDBOpti
 
 	admin, err := pgx.Connect(ctx, adminURL)
 	if err != nil {
-		return fmt.Errorf("connect as supervisor admin: %w", err)
+		return summary, fmt.Errorf("connect as supervisor admin: %w", err)
 	}
 	defer admin.Close(ctx)
 
 	for index, role := range cfg.Roles {
 		name, err := role.Name.Required(fmt.Sprintf("roles[%d].name", index))
 		if err != nil {
-			return err
+			return summary, err
 		}
 		password := ""
 		if role.Password.Configured() {
 			password, err = role.Password.Required(fmt.Sprintf("roles[%d].password", index))
 		}
 		if err != nil {
-			return err
+			return summary, err
 		}
 		if err := ensureRole(ctx, admin, name, password, role.CanLogin()); err != nil {
-			return err
+			return summary, err
 		}
 	}
 	if initDB != nil {
 		if err := setRolePassword(ctx, admin, initDB.PostgresUser, initDB.PostgresPassword); err != nil {
-			return fmt.Errorf("reconcile initdb superuser password: %w", err)
+			return summary, fmt.Errorf("reconcile initdb superuser password: %w", err)
 		}
 	}
 
@@ -51,7 +69,7 @@ func Reconcile(ctx context.Context, cfg config.Config, initDB *config.InitDBOpti
 	for index, role := range cfg.Roles {
 		name, err := role.Name.Required(fmt.Sprintf("roles[%d].name", index))
 		if err != nil {
-			return err
+			return summary, err
 		}
 		// The two lists differ only in what they document: PostgreSQL has one
 		// membership mechanism, so they are reconciled as a single set.
@@ -63,13 +81,13 @@ func Reconcile(ctx context.Context, cfg config.Config, initDB *config.InitDBOpti
 			for grantedIndex, member := range list.entries {
 				group, err := member.Required(fmt.Sprintf("roles[%d].%s[%d]", index, list.field, grantedIndex))
 				if err != nil {
-					return err
+					return summary, err
 				}
 				groups = append(groups, group)
 			}
 		}
 		if err := ensureRoleMemberships(ctx, admin, name, groups); err != nil {
-			return err
+			return summary, err
 		}
 	}
 
@@ -81,7 +99,7 @@ func Reconcile(ctx context.Context, cfg config.Config, initDB *config.InitDBOpti
 	}
 	for _, database := range cfg.Databases {
 		if err := ensureDatabase(ctx, admin, adminURL, database, defaultOwner); err != nil {
-			return err
+			return summary, err
 		}
 	}
 
@@ -89,12 +107,14 @@ func Reconcile(ctx context.Context, cfg config.Config, initDB *config.InitDBOpti
 	for index, role := range cfg.Roles {
 		name, err := role.Name.Required(fmt.Sprintf("roles[%d].name", index))
 		if err != nil {
-			return err
+			return summary, err
 		}
 		roleNames = append(roleNames, name)
 	}
 
-	return reconcilePermissions(ctx, adminURL, cfg, roleNames)
+	rewritten, err := reconcilePermissions(ctx, adminURL, cfg, roleNames)
+	summary.PrivilegesRewritten = rewritten
+	return summary, err
 }
 
 // schemaKey identifies one schema within one database.
@@ -186,36 +206,38 @@ func (c *connector) closeAll() {
 // an unchanged file. When something has drifted it falls back to revoking and
 // re-granting outright, which converges from any state without this code having
 // to reproduce PostgreSQL's ACL semantics.
-func reconcilePermissions(ctx context.Context, adminURL string, cfg config.Config, roleNames []string) error {
+// reconcilePermissions reports whether it had to write anything, which is the
+// drift decision it already makes on the way in.
+func reconcilePermissions(ctx context.Context, adminURL string, cfg config.Config, roleNames []string) (bool, error) {
 	databases := permissionDatabases(cfg)
 	conns := newConnector(ctx, adminURL)
 	defer conns.closeAll()
 
 	creators, owners, err := snapshotSchemas(ctx, conns, databases)
 	if err != nil {
-		return err
+		return false, err
 	}
 	desired := desiredPrivileges(cfg, roleNames, schemasByDatabase(creators))
 
 	drifted, err := hasDrift(ctx, conns, databases, roleNames, desired, creators, owners)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if !drifted {
-		return nil
+		return false, nil
 	}
 
 	if err := rewritePrivileges(ctx, conns, databases, roleNames, desired, creators, owners); err != nil {
-		return err
+		return true, err
 	}
 
 	// Every CREATE grant the config asks for has now been applied, so the creator
 	// set is final and default privileges can be pinned to it.
 	finalCreators, _, err := snapshotSchemas(ctx, conns, databases)
 	if err != nil {
-		return err
+		return true, err
 	}
-	return writeDefaultPrivileges(ctx, conns, databases, roleNames, desired, finalCreators, owners)
+	return true, writeDefaultPrivileges(ctx, conns, databases, roleNames, desired, finalCreators, owners)
 }
 
 // permissionDatabases lists every database whose grants this run may touch.

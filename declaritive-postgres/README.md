@@ -239,7 +239,11 @@ PostgreSQL itself does not work that way. `ALTER DEFAULT PRIVILEGES` is scoped t
 
 Two consequences follow. Grants apply regardless of who creates an object, including the bootstrap superuser, so the common pattern of letting the superuser own every table while an application role holds `ALL` works without further configuration. And the creator set is re-read before anything is revoked, so when a role loses `CREATE`, or leaves the configuration entirely, the default privileges registered for it are cleaned up rather than left behind.
 
-Reconciliation reads before it writes. Every startup first compares what the cluster holds against what the file asks for, and when the two already agree the phase is read-only: no grant or revoke is issued at all, which is the normal case for a restart with an unchanged file. When something has drifted the privileges are revoked and re-granted outright rather than patched, so the result converges from whatever state the database was in. Each role's rewrite within one database runs as a single transaction, so a client connecting while reconciliation is running sees either the old privileges or the new ones, never the moment in between.
+Reconciliation reads before it writes. Every startup first compares what the cluster holds against what the file asks for, and when the two already agree the phase is read-only: no grant or revoke is issued at all, which is the normal case for a restart with an unchanged file. When something has drifted the privileges are revoked and re-granted outright rather than patched, so the result converges from whatever state the database was in. Each role's rewrite within one database runs as a single transaction, so a client connecting while reconciliation is running sees either the old privileges or the new ones, never the moment in between. A successful run logs one line saying which of the two happened, so `docker logs` distinguishes a no-op restart from a rewrite:
+
+```
+PostgreSQL reconciliation complete: 4 roles, 2 databases, privileges unchanged
+```
 
 Roles that can create objects outside the configuration are the one thing this cannot account for. A role granted `CREATE` by hand becomes a creator that the next reconcile will discover and include, but objects it creates before then are covered only from that reconcile onward.
 
