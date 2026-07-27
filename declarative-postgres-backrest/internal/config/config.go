@@ -326,6 +326,35 @@ func validateGrantedRoles(roleIndex int, name string, granted, predefined []Mayb
 	return check("default_roles", predefined, true)
 }
 
+// GrantSet is the privileges a permission asks for on each object class, with
+// ALL resolved to the concrete list.
+type GrantSet struct {
+	Schema    []string
+	Tables    []string
+	Sequences []string
+	Routines  []string
+}
+
+// ExpandedGrants resolves ALL so a declaration can be compared against what the
+// catalog actually holds. PostgreSQL records ALL as the full set of named
+// privileges rather than as a wildcard, so anything comparing a declaration to
+// an ACL has to expand it the same way.
+func (permission Permission) ExpandedGrants() GrantSet {
+	return GrantSet{
+		Schema:    expandGrants(permission.Grants, schemaGrants),
+		Tables:    expandGrants(permission.TableGrants, tableGrants),
+		Sequences: expandGrants(permission.SequenceGrants, sequenceGrants),
+		Routines:  expandGrants(permission.RoutineGrants, routineGrants),
+	}
+}
+
+func expandGrants(grants, supported []string) []string {
+	if len(grants) == 1 && grants[0] == "ALL" {
+		return append([]string(nil), supported...)
+	}
+	return append([]string(nil), grants...)
+}
+
 func (permission Permission) Validate() error {
 	if permission.Database == "" || (len(permission.Grants) == 0 && len(permission.TableGrants) == 0 &&
 		len(permission.SequenceGrants) == 0 && len(permission.RoutineGrants) == 0) {
