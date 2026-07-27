@@ -60,18 +60,13 @@ roles:
     password: ${READER_PASSWORD}
     permissions:
       - database: app_db
-        grants:
-          - USAGE
-        table_grants:
-          - SELECT
+        grants: [USAGE]
+        table_grants: [SELECT]
 databases:
   - name: app_db
     owner: app_user
-    schemas:
-      - staging
-    extensions:
-      - pgcrypto
-      - pg_stat_statements
+    schemas: [staging]
+    extensions: [pgcrypto, pg_stat_statements]
 ```
 
 ### PostgreSQL With pgBackRest
@@ -124,18 +119,13 @@ roles:
     permissions:
       - database: app_db
         schema: public
-        grants:
-          - USAGE
-        table_grants:
-          - SELECT
+        grants: [USAGE]
+        table_grants: [SELECT]
 databases:
   - name: app_db
     owner: app_user
-    schemas:
-      - staging
-    extensions:
-      - pgcrypto
-      - pg_stat_statements
+    schemas: [staging]
+    extensions: [pgcrypto, pg_stat_statements]
 ```
 
 ### Group roles for read and write access
@@ -160,43 +150,31 @@ roles:
     permissions:
       - database: app_db
         schema: public
-        grants:
-          - USAGE
-        table_grants:
-          - SELECT
-        sequence_grants:
-          - SELECT
-        routine_grants:
-          - EXECUTE
+        grants: [USAGE]
+        table_grants: [SELECT]
+        sequence_grants: [SELECT]
+        routine_grants: [EXECUTE]
 
   - name: app_write
     nologin: true
     permissions:
       - database: app_db
         schema: public
-        table_grants:
-          - INSERT
-          - UPDATE
-          - DELETE
-        sequence_grants:
-          - USAGE
+        table_grants: [INSERT, UPDATE, DELETE]
+        sequence_grants: [USAGE]
 
   # Login roles: they hold no permissions of their own, only memberships.
   - name: app_user
     password: ${APP_PASSWORD}
-    roles:
-      - app_read
-      - app_write
+    roles: [app_read, app_write]
 
   - name: debug_user
     password: ${DEBUG_PASSWORD}
-    roles:
-      - app_read
+    roles: [app_read]
 
 databases:
   - name: app_db
-    extensions:
-      - pgcrypto
+    extensions: [pgcrypto]
 ```
 
 `app_db` has no `owner`, so it stays with the bootstrap superuser, which then creates the tables. That is fine here: because grants are registered against every role that can create objects, `app_read` and `app_write` cover the superuser's tables without anything further being declared.
@@ -216,24 +194,10 @@ roles:
     permissions:
       - database: app_db
         schema: public
-        grants:
-          - CREATE
-          - USAGE
-        table_grants:
-          - SELECT
-          - INSERT
-          - UPDATE
-          - DELETE
-          - TRUNCATE
-          - REFERENCES
-          - TRIGGER
-          - MAINTAIN
-        sequence_grants:
-          - USAGE
-          - SELECT
-          - UPDATE
-        routine_grants:
-          - EXECUTE
+        grants: [CREATE, USAGE]
+        table_grants: [SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER, MAINTAIN]
+        sequence_grants: [USAGE, SELECT, UPDATE]
+        routine_grants: [EXECUTE]
 ```
 
 Each list also accepts the single value `ALL`, which is shorter and stays correct if PostgreSQL adds a privilege later:
@@ -278,12 +242,10 @@ roles:
 roles:
   - name: metrics
     password: ${METRICS_PASSWORD}
-    default_roles:
-      - pg_monitor          # read every statistics view, including query text
+    default_roles: [pg_monitor]   # read every statistics view, including query text
   - name: backup_operator
     password: ${BACKUP_PASSWORD}
-    default_roles:
-      - pg_read_all_data    # SELECT on every table in every database
+    default_roles: [pg_read_all_data]   # SELECT on every table in every database
 ```
 
 Useful PostgreSQL predefined roles include `pg_read_all_data`, `pg_write_all_data`, `pg_read_all_stats`, `pg_monitor`, `pg_signal_backend`, and `pg_maintain`. Reading query text from `pg_stat_statements` needs `pg_read_all_stats` or `pg_monitor`; without it the `query` column reads `<insufficient privilege>` for statements belonging to other roles.
