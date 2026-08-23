@@ -98,6 +98,12 @@ func New(pgData, postgresUser string, connection config.ConnectionOptions, optio
 		"log-level-file=detail",
 		"spool-path=" + spoolPath,
 	}
+	if options.S3CAFile != "" {
+		if _, err := os.Stat(options.S3CAFile); err != nil {
+			return nil, fmt.Errorf("pgbackrest.s3.ca_file: %w", err)
+		}
+		lines = append(lines, "repo1-storage-ca-file="+options.S3CAFile)
+	}
 	if options.RepositoryCipherPass != "" {
 		lines = append(lines, "repo1-cipher-type=aes-256-cbc", "repo1-cipher-pass="+options.RepositoryCipherPass)
 	}

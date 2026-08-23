@@ -16,6 +16,7 @@ pgbackrest:
     region: us-east-1
     uri_style: path
     verify_tls: true
+    # ca_file: /etc/ssl/certs/s3-ca.crt
     access_key: ${S3_ACCESS_KEY}
     secret_key: ${S3_SECRET_KEY}
   retention:

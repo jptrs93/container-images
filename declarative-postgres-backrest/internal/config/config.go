@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"sort"
@@ -93,6 +94,7 @@ type S3 struct {
 	Region    MaybeEnv `yaml:"region"`
 	URIStyle  MaybeEnv `yaml:"uri_style"`
 	VerifyTLS *bool    `yaml:"verify_tls"`
+	CAFile    MaybeEnv `yaml:"ca_file"`
 	AccessKey MaybeEnv `yaml:"access_key"`
 	SecretKey MaybeEnv `yaml:"secret_key"`
 }
@@ -121,6 +123,7 @@ type PGBackRestOptions struct {
 	S3Region              string
 	S3URIStyle            string
 	S3VerifyTLS           bool
+	S3CAFile              string
 	S3AccessKey           string
 	S3SecretKey           string
 	RepositoryCipherPass  string
@@ -517,6 +520,19 @@ func (pgBackRest PGBackRest) Resolve() (PGBackRestOptions, error) {
 	if uriStyle != "path" && uriStyle != "host" {
 		return PGBackRestOptions{}, fmt.Errorf("pgbackrest.s3.uri_style must be path or host")
 	}
+	verifyTLS := defaultBool(pgBackRest.S3.VerifyTLS, true)
+	caFile := string(pgBackRest.S3.CAFile)
+	if caFile != "" {
+		if !verifyTLS {
+			return PGBackRestOptions{}, fmt.Errorf("pgbackrest.s3.ca_file requires verify_tls to be true")
+		}
+		if strings.TrimSpace(caFile) != caFile || strings.ContainsAny(caFile, "\r\n\x00") {
+			return PGBackRestOptions{}, fmt.Errorf("pgbackrest.s3.ca_file must be a single-line absolute path")
+		}
+		if !filepath.IsAbs(caFile) {
+			return PGBackRestOptions{}, fmt.Errorf("pgbackrest.s3.ca_file must be an absolute path")
+		}
+	}
 	if pgBackRest.Retention.Full < 0 || pgBackRest.Retention.Full > 9999999 || pgBackRest.Retention.Archive < 0 || pgBackRest.Retention.Archive > 9999999 {
 		return PGBackRestOptions{}, fmt.Errorf("pgbackrest retention values must be between 1 and 9999999 when set")
 	}
@@ -567,7 +583,8 @@ func (pgBackRest PGBackRest) Resolve() (PGBackRestOptions, error) {
 		S3Bucket:              string(pgBackRest.S3.Bucket),
 		S3Region:              defaultString(pgBackRest.S3.Region, "us-east-1"),
 		S3URIStyle:            uriStyle,
-		S3VerifyTLS:           defaultBool(pgBackRest.S3.VerifyTLS, true),
+		S3VerifyTLS:           verifyTLS,
+		S3CAFile:              caFile,
 		S3AccessKey:           accessKey,
 		S3SecretKey:           secretKey,
 		RepositoryCipherPass:  cipherPass,
@@ -737,6 +754,7 @@ func (cfg *Config) resolveEnvironmentReferences() error {
 			{"pgbackrest.s3.bucket", &pgBackRest.S3.Bucket},
 			{"pgbackrest.s3.region", &pgBackRest.S3.Region},
 			{"pgbackrest.s3.uri_style", &pgBackRest.S3.URIStyle},
+			{"pgbackrest.s3.ca_file", &pgBackRest.S3.CAFile},
 			{"pgbackrest.s3.access_key", &pgBackRest.S3.AccessKey},
 			{"pgbackrest.s3.secret_key", &pgBackRest.S3.SecretKey},
 			{"pgbackrest.schedules.full", &pgBackRest.Schedules.Full},

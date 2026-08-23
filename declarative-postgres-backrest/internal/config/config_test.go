@@ -25,6 +25,28 @@ func TestPGBackRestResolveUsesConfiguredSecretKeys(t *testing.T) {
 	if options.DiffSchedule != "0 2 * * 1-6" || options.Timezone != "UTC" {
 		t.Fatalf("defaults = schedule %q, timezone %q", options.DiffSchedule, options.Timezone)
 	}
+	if options.S3CAFile != "" {
+		t.Fatalf("S3CAFile = %q, want empty", options.S3CAFile)
+	}
+}
+
+func TestPGBackRestResolveUsesConfiguredCAFile(t *testing.T) {
+	options, err := PGBackRest{
+		Stanza: "app-prod",
+		S3: S3{
+			Host:      "s3.example.internal",
+			Bucket:    "postgres-backups",
+			CAFile:    "/etc/ssl/certs/s3-ca.crt",
+			AccessKey: "access-key",
+			SecretKey: "secret-key",
+		},
+	}.Resolve()
+	if err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
+	if options.S3CAFile != "/etc/ssl/certs/s3-ca.crt" || !options.S3VerifyTLS {
+		t.Fatalf("resolved ca_file = %q, verify_tls = %v", options.S3CAFile, options.S3VerifyTLS)
+	}
 }
 
 func TestMaybeEnvResolvesLiteral(t *testing.T) {
@@ -120,7 +142,7 @@ func TestLoadResolvesStringEnvironmentReferencesOnce(t *testing.T) {
 func TestLoadResolvesEveryMaybeEnvField(t *testing.T) {
 	t.Setenv("TEST_VALUE", "resolved")
 	path := t.TempDir() + "/config.yaml"
-	contents := "settings:\n  application_name: ${TEST_VALUE}\nhba:\n  - ${TEST_VALUE}\ninitdb:\n  postgres_user: ${TEST_VALUE}\n  postgres_password: ${TEST_VALUE}\n  postgres_db: ${TEST_VALUE}\nroles:\n  - name: ${TEST_VALUE}\n    password: ${TEST_VALUE}\n    permissions:\n      - database: ${TEST_VALUE}\n        schema: ${TEST_VALUE}\n        grants: [USAGE]\ndatabases:\n  - name: ${TEST_VALUE}\n    owner: ${TEST_VALUE}\n    schemas:\n      - ${TEST_VALUE}\n    extensions:\n      - ${TEST_VALUE}\npgbackrest:\n  enabled: true\n  stanza: ${TEST_VALUE}\n  repository_cipher_pass: ${TEST_VALUE}\n  s3:\n    host: ${TEST_VALUE}\n    port: ${TEST_VALUE}\n    bucket: ${TEST_VALUE}\n    region: ${TEST_VALUE}\n    uri_style: ${TEST_VALUE}\n    access_key: ${TEST_VALUE}\n    secret_key: ${TEST_VALUE}\n  schedules:\n    full: ${TEST_VALUE}\n    differential: ${TEST_VALUE}\n    check: ${TEST_VALUE}\n  archive:\n    push_queue_max: ${TEST_VALUE}\n  timezone: ${TEST_VALUE}\n"
+	contents := "settings:\n  application_name: ${TEST_VALUE}\nhba:\n  - ${TEST_VALUE}\ninitdb:\n  postgres_user: ${TEST_VALUE}\n  postgres_password: ${TEST_VALUE}\n  postgres_db: ${TEST_VALUE}\nroles:\n  - name: ${TEST_VALUE}\n    password: ${TEST_VALUE}\n    permissions:\n      - database: ${TEST_VALUE}\n        schema: ${TEST_VALUE}\n        grants: [USAGE]\ndatabases:\n  - name: ${TEST_VALUE}\n    owner: ${TEST_VALUE}\n    schemas:\n      - ${TEST_VALUE}\n    extensions:\n      - ${TEST_VALUE}\npgbackrest:\n  enabled: true\n  stanza: ${TEST_VALUE}\n  repository_cipher_pass: ${TEST_VALUE}\n  s3:\n    host: ${TEST_VALUE}\n    port: ${TEST_VALUE}\n    bucket: ${TEST_VALUE}\n    region: ${TEST_VALUE}\n    uri_style: ${TEST_VALUE}\n    ca_file: ${TEST_VALUE}\n    access_key: ${TEST_VALUE}\n    secret_key: ${TEST_VALUE}\n  schedules:\n    full: ${TEST_VALUE}\n    differential: ${TEST_VALUE}\n    check: ${TEST_VALUE}\n  archive:\n    push_queue_max: ${TEST_VALUE}\n  timezone: ${TEST_VALUE}\n"
 	if err := os.WriteFile(path, []byte(contents), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -133,8 +155,8 @@ func TestLoadResolvesEveryMaybeEnvField(t *testing.T) {
 		cfg.Roles[0].Name, cfg.Roles[0].Password, cfg.Roles[0].Permissions[0].Database, cfg.Roles[0].Permissions[0].Schema,
 		cfg.Databases[0].Name, cfg.Databases[0].Owner, cfg.Databases[0].Schemas[0], cfg.Databases[0].Extensions[0],
 		cfg.PGBackRest.Stanza, cfg.PGBackRest.RepositoryCipherPass, cfg.PGBackRest.S3.Host, cfg.PGBackRest.S3.Port,
-		cfg.PGBackRest.S3.Bucket, cfg.PGBackRest.S3.Region, cfg.PGBackRest.S3.URIStyle, cfg.PGBackRest.S3.AccessKey,
-		cfg.PGBackRest.S3.SecretKey, cfg.PGBackRest.Schedules.Full, cfg.PGBackRest.Schedules.Differential,
+		cfg.PGBackRest.S3.Bucket, cfg.PGBackRest.S3.Region, cfg.PGBackRest.S3.URIStyle, cfg.PGBackRest.S3.CAFile,
+		cfg.PGBackRest.S3.AccessKey, cfg.PGBackRest.S3.SecretKey, cfg.PGBackRest.Schedules.Full, cfg.PGBackRest.Schedules.Differential,
 		cfg.PGBackRest.Schedules.Check, cfg.PGBackRest.Archive.PushQueueMax, cfg.PGBackRest.Timezone,
 	}
 	for _, value := range values {
@@ -433,6 +455,12 @@ func TestPGBackRestResolveRejectsInvalidStartupConfiguration(t *testing.T) {
 		{"bracketed IPv4 host", func(value *PGBackRest) { value.S3.Host = "[127.0.0.1]" }, "valid hostname"},
 		{"excessive processes", func(value *PGBackRest) { value.ProcessMax = 1000 }, "process_max"},
 		{"multiline secret", func(value *PGBackRest) { value.S3.SecretKey = "secret\nvalue" }, "single line"},
+		{"relative ca_file", func(value *PGBackRest) { value.S3.CAFile = "certs/s3-ca.crt" }, "absolute path"},
+		{"ca_file without tls", func(value *PGBackRest) {
+			disabled := false
+			value.S3.VerifyTLS = &disabled
+			value.S3.CAFile = "/etc/ssl/certs/s3-ca.crt"
+		}, "requires verify_tls"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
