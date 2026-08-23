@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"os/exec"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/jptrs93/container-images/declarative-postgres-backrest/internal/config"
+	"github.com/jptrs93/container-images/declarative-postgres-backrest/internal/logging"
 	"github.com/jptrs93/container-images/declarative-postgres-backrest/internal/status"
 	"github.com/robfig/cron/v3"
 )
@@ -204,7 +206,7 @@ func (manager *Manager) Start(ctx context.Context) {
 	go func() {
 		for {
 			if err := manager.initialize(ctx); err != nil {
-				fmt.Fprintf(os.Stdout, "pgBackRest initialization failed: %v\n", err)
+				slog.Error("pgBackRest initialization failed", "error", err)
 				if !sleep(ctx, time.Minute) {
 					return
 				}
@@ -285,10 +287,10 @@ func (manager *Manager) schedule(ctx context.Context) {
 				if ctx.Err() != nil {
 					return
 				}
-				fmt.Fprintf(os.Stdout, "scheduled pgBackRest command failed: %v\n", err)
+				slog.Error("scheduled pgBackRest command failed", "error", err)
 			}
 		}); err != nil {
-			fmt.Fprintf(os.Stdout, "invalid pgBackRest schedule %q: %v\n", job.schedule, err)
+			slog.Error("invalid pgBackRest schedule", "schedule", job.schedule, "error", err)
 			_ = manager.setRepositoryState("failed")
 			return
 		}
@@ -362,8 +364,10 @@ func (manager *Manager) runWithState(ctx context.Context, state string, args ...
 func (manager *Manager) runUnlocked(ctx context.Context, args ...string) error {
 	command := exec.CommandContext(ctx, "gosu", append([]string{"postgres", "pgbackrest"}, args...)...)
 	command.Env = pgbackrestEnv()
-	command.Stdout = os.Stdout
-	command.Stderr = os.Stdout
+	output := logging.NewLineWriter()
+	defer output.Flush()
+	command.Stdout = output
+	command.Stderr = output
 	return command.Run()
 }
 
@@ -372,8 +376,10 @@ func (manager *Manager) runSupervised(ctx context.Context, signals <-chan os.Sig
 	defer manager.commandMu.Unlock()
 	command := exec.Command("gosu", append([]string{"postgres", "pgbackrest"}, args...)...)
 	command.Env = pgbackrestEnv()
-	command.Stdout = os.Stdout
-	command.Stderr = os.Stdout
+	output := logging.NewLineWriter()
+	defer output.Flush()
+	command.Stdout = output
+	command.Stderr = output
 	if err := command.Start(); err != nil {
 		return err
 	}
@@ -414,7 +420,9 @@ func (manager *Manager) output(ctx context.Context, args ...string) ([]byte, err
 	defer manager.commandMu.Unlock()
 	command := exec.CommandContext(ctx, "gosu", append([]string{"postgres", "pgbackrest"}, args...)...)
 	command.Env = pgbackrestEnv()
-	command.Stderr = os.Stdout
+	stderr := logging.NewLineWriter()
+	defer stderr.Flush()
+	command.Stderr = stderr
 	return command.Output()
 }
 
