@@ -203,6 +203,7 @@ Avoid `pg_read_server_files`, `pg_write_server_files`, and `pg_execute_server_pr
 - If the main PostgreSQL process dies at any point, the supervisor propagates its failure and the container crashes.
 - Once the PostgreSQL instance is running, the supervisor runs the reconciler to reconcile users and roles, permissions, and other declared database state. If reconciliation fails, the container crashes.
 - After successful reconciliation, the readiness signal is given.
+- Everything the container writes to stdout — supervisor and PostgreSQL output alike — is one JSON object per line; see [Logging](#logging).
 
 ## Reconciliation
 
@@ -242,12 +243,34 @@ Two consequences follow. Grants apply regardless of who creates an object, inclu
 Reconciliation reads before it writes. Every startup first compares what the cluster holds against what the file asks for, and when the two already agree the phase is read-only: no grant or revoke is issued at all, which is the normal case for a restart with an unchanged file. When something has drifted the privileges are revoked and re-granted outright rather than patched, so the result converges from whatever state the database was in. Each role's rewrite within one database runs as a single transaction, so a client connecting while reconciliation is running sees either the old privileges or the new ones, never the moment in between. A successful run logs one line saying which of the two happened, so `docker logs` distinguishes a no-op restart from a rewrite:
 
 ```
-PostgreSQL reconciliation complete: 4 roles, 2 databases, privileges unchanged
+{"time":"2026-08-23T04:05:06.789Z","level":"INFO","msg":"PostgreSQL reconciliation complete: 4 roles, 2 databases, privileges unchanged"}
 ```
 
 Roles that can create objects outside the configuration are the one thing this cannot account for. A role granted `CREATE` by hand becomes a creator that the next reconcile will discover and include, but objects it creates before then are covered only from that reconcile onward.
 
-The supervisor always adds `local all all trust` for its local reconciliation connection. If `hba` is omitted, it also permits remote `scram-sha-256` access. PostgreSQL and supervisor logs go to container stdout.
+The supervisor always adds `local all all trust` for its local reconciliation connection. If `hba` is omitted, it also permits remote `scram-sha-256` access.
+
+## Logging
+
+Container stdout carries one JSON object per line, with supervisor and PostgreSQL records intermixed and nothing written to disk. Every record is flat — no envelope or nesting — and uses the Go standard keys: `time` (RFC3339, UTC), `level`, and `msg`.
+
+PostgreSQL runs with the logging collector emitting `jsonlog` into named pipes that the supervisor relays, so a multi-line statement or stack trace stays inside one record instead of fragmenting across lines. Each record's `timestamp`, `error_severity`, and `message` keys are renamed to the standard three, and every other jsonlog field (`pid`, `user`, `dbname`, `application_name`, `state_code`, `backend_type`, `statement`, `detail`, `hint`, ...) passes through unchanged:
+
+```
+{"time":"2026-08-23T04:05:06.789Z","level":"ERROR","msg":"relation \"missing\" does not exist","backend_type":"client backend","dbname":"app","pid":123,"state_code":"42P01","statement":"select * from missing","user":"app_user"}
+```
+
+Only the keys are renamed, never the values: `level` on a PostgreSQL record carries the PostgreSQL severity verbatim (`DEBUG1` .. `DEBUG5`, `LOG`, `INFO`, `NOTICE`, `WARNING`, `ERROR`, `FATAL`, `PANIC`), while supervisor records use the Go slog values (`DEBUG`, `INFO`, `WARN`, `ERROR`).
+
+Plain-text output — initdb, anything a process writes straight to stderr — is wrapped line by line as `msg`, with the level read from severity markers such as `FATAL:` when present:
+
+```
+{"time":"2026-08-23T02:00:00.123456789Z","level":"INFO","msg":"performing post-bootstrap initialization ... ok"}
+```
+
+Because every line is JSON, `docker logs` output can be filtered directly, for example `docker logs app 2>&1 | jq 'select(.level == "ERROR")'`, and shippers such as Loki, Vector, or Fluent Bit ingest it with a plain JSON parser and no multiline configuration.
+
+The transport settings (`logging_collector`, `log_destination`, `log_directory`, `log_filename`, `log_rotation_age`, `log_rotation_size`, `log_file_mode`, `log_timezone`) are managed by the supervisor and rejected in `settings`, so the format cannot be broken by configuration. Content settings such as `log_min_messages`, `log_statement`, and `log_min_duration_statement` remain yours to set.
 
 ## Health And Operations
 

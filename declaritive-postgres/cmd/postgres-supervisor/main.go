@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/jptrs93/container-images/declaritive-postgres/internal/config"
+	"github.com/jptrs93/container-images/declaritive-postgres/internal/logging"
 	"github.com/jptrs93/container-images/declaritive-postgres/internal/reconciler"
 	"github.com/jptrs93/container-images/declaritive-postgres/internal/status"
 )
@@ -23,7 +24,7 @@ import (
 const supervisorStatePath = "/var/lib/postgresql/supervisor-state"
 
 func main() {
-	log.SetOutput(os.Stdout)
+	logging.Setup()
 	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
 		if err := remoteHealthcheck(); err != nil {
 			fmt.Fprintln(os.Stdout, err)
@@ -32,7 +33,7 @@ func main() {
 		return
 	}
 	if err := run(); err != nil {
-		fmt.Fprintln(os.Stdout, err)
+		slog.Error(err.Error())
 		os.Exit(exitCode(err))
 	}
 }
@@ -79,6 +80,15 @@ func run() error {
 	}); err != nil {
 		return err
 	}
+	if err := logging.EnsureLogFifos(); err != nil {
+		return err
+	}
+	if err := logging.StartLogTailers(); err != nil {
+		return err
+	}
+	// The tailers read the collector pipes until the process exits; give them a
+	// moment to drain PostgreSQL's final shutdown messages before returning.
+	defer time.Sleep(300 * time.Millisecond)
 	connection := cfg.ConnectionOptions()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -98,8 +108,10 @@ func run() error {
 		"-c", "unix_socket_directories="+connection.SocketDirectories,
 	)
 	command := exec.Command("docker-entrypoint.sh", commandArgs...)
-	command.Stdout = os.Stdout
-	command.Stderr = os.Stdout
+	childOutput := logging.NewLineWriter()
+	defer childOutput.Flush()
+	command.Stdout = childOutput
+	command.Stderr = childOutput
 	command.Stdin = os.Stdin
 	command.Env = postgresChildEnv(cfg, initDB, connection)
 	signals := make(chan os.Signal, 2)
@@ -136,7 +148,7 @@ func run() error {
 			if shutdownRequested {
 				continue
 			}
-			log.Printf("PostgreSQL reconciliation failed: %v", err)
+			slog.Error("PostgreSQL reconciliation failed", "error", err)
 			_ = status.Write(supervisorStatePath, "failed")
 			cancel()
 			_ = command.Process.Signal(syscall.SIGTERM)
@@ -171,7 +183,7 @@ func reconcile(ctx context.Context, cfg config.Config, initDB *config.InitDBOpti
 	if err := status.Write(supervisorStatePath, "healthy"); err != nil {
 		return fmt.Errorf("write successful reconciliation state: %w", err)
 	}
-	log.Printf("PostgreSQL reconciliation complete: %s", summary)
+	slog.Info("PostgreSQL reconciliation complete: " + summary.String())
 	return nil
 }
 
@@ -210,7 +222,7 @@ func startHealthServer(check func() error) (*http.Server, error) {
 	}
 	go func() {
 		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Printf("health server failed: %v", err)
+			slog.Error("health server failed", "error", err)
 		}
 	}()
 	return server, nil

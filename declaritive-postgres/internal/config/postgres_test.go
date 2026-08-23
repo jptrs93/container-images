@@ -23,7 +23,9 @@ func TestWritePostgresFilesUsesConnectionDefaultsAndOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, setting := range []string{"listen_addresses = 'localhost'", "Port = '5433'", "unix_socket_directories = '/tmp/postgres'"} {
+	for _, setting := range []string{"listen_addresses = 'localhost'", "Port = '5433'", "unix_socket_directories = '/tmp/postgres'",
+		"logging_collector = on", "log_destination = 'jsonlog'", "log_directory = '/var/run/postgres-supervisor/log'",
+		"log_filename = 'postgres'", "log_rotation_age = 0", "log_rotation_size = 0", "log_timezone = 'UTC'"} {
 		t.Run(setting, func(t *testing.T) {
 			if !strings.Contains(string(contents), setting) {
 				t.Fatalf("postgresql.conf does not contain %q", setting)
@@ -83,7 +85,8 @@ func TestValidateRejectsInvalidConnectionSettings(t *testing.T) {
 }
 
 func TestValidateRejectsSupervisorManagedSettings(t *testing.T) {
-	for _, setting := range []string{"data_directory", "hba_file", "ident_file", "config_file", "logging_collector", "log_destination"} {
+	for _, setting := range []string{"data_directory", "hba_file", "ident_file", "config_file",
+		"logging_collector", "log_destination", "log_directory", "log_filename", "log_rotation_age", "log_rotation_size", "log_file_mode", "log_timezone"} {
 		t.Run(setting, func(t *testing.T) {
 			cfg := Config{Settings: map[string]MaybeEnv{setting: "value"}}
 			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "managed by the supervisor") {

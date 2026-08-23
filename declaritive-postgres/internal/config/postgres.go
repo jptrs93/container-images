@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/jptrs93/container-images/declaritive-postgres/internal/logging"
 )
 
 type RuntimeOptions struct {
@@ -55,8 +57,13 @@ func WritePostgresFiles(cfg Config, options RuntimeOptions) error {
 		"data_directory = " + quote(options.PGData),
 		"hba_file = " + quote(hbaPath),
 		"ident_file = " + quote(identPath),
-		"logging_collector = off",
-		"log_destination = 'stderr'",
+		"logging_collector = on",
+		"log_destination = 'jsonlog'",
+		"log_directory = " + quote(logging.LogDirectory),
+		"log_filename = " + quote(logging.LogFileName),
+		"log_rotation_age = 0",
+		"log_rotation_size = 0",
+		"log_timezone = 'UTC'",
 	}
 
 	keys := make([]string, 0, len(cfg.Settings))
@@ -95,7 +102,8 @@ func validatePostgresSettings(settings map[string]MaybeEnv) error {
 		}
 		seen[normalized] = key
 		switch normalized {
-		case "data_directory", "hba_file", "ident_file", "config_file", "logging_collector", "log_destination":
+		case "data_directory", "hba_file", "ident_file", "config_file",
+			"logging_collector", "log_destination", "log_directory", "log_filename", "log_rotation_age", "log_rotation_size", "log_file_mode", "log_timezone":
 			return fmt.Errorf("PostgreSQL setting %q is managed by the supervisor", key)
 		}
 	}
