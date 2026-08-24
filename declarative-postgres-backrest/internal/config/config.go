@@ -34,6 +34,7 @@ type Role struct {
 	Name         MaybeEnv     `yaml:"name"`
 	Password     MaybeEnv     `yaml:"password"`
 	NoLogin      bool         `yaml:"nologin"`
+	Replication  bool         `yaml:"replication"`
 	Roles        []MaybeEnv   `yaml:"roles"`
 	DefaultRoles []MaybeEnv   `yaml:"default_roles"`
 	Permissions  []Permission `yaml:"permissions"`
@@ -207,6 +208,11 @@ func (cfg *Config) Validate() error {
 		roleNames[name] = struct{}{}
 		if !role.CanLogin() && role.Password.Configured() {
 			return fmt.Errorf("roles[%d].password is set on %q, which cannot log in", roleIndex, name)
+		}
+		// REPLICATION is not inherited through membership, so it is dead weight
+		// on a role that cannot connect.
+		if !role.CanLogin() && role.Replication {
+			return fmt.Errorf("roles[%d].replication is set on %q, which cannot log in", roleIndex, name)
 		}
 		if err := validateGrantedRoles(roleIndex, name, role.Roles, role.DefaultRoles); err != nil {
 			return err

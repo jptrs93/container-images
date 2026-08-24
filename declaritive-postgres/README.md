@@ -211,6 +211,8 @@ The supervisor creates missing roles, databases, schemas, and extensions. Declar
 
 `nologin` defaults to `false`, so a role with a name and a password behaves as it always has. Setting `nologin: true` produces a `NOLOGIN` role, which cannot connect and exists to be granted onward as a bundle of privileges. It is reconciled like everything else: flipping the value on an existing role takes its ability to connect away, or gives it back. Declaring a `password` on a role that cannot log in is rejected rather than silently ignored.
 
+`replication: true` gives a role the `REPLICATION` attribute, which the walsender connection behind streaming or logical replication requires. Like `nologin` it is reconciled in both directions: removing it strips the attribute, including one granted by hand, so the file stays the whole truth about who can replicate. PostgreSQL does not pass the attribute through role membership, so it belongs on the role that actually connects; declaring it on a `nologin` role is rejected.
+
 `roles` and `default_roles` both grant a role membership in other roles. They are one mechanism split into two lists purely so a configuration states where a privilege comes from: `roles` names roles this configuration defines, and `default_roles` names the roles PostgreSQL ships, such as `pg_read_all_data`, `pg_write_all_data` and `pg_monitor`.
 
 The split is checked rather than advisory. PostgreSQL reserves the `pg_` prefix and refuses to create any role that uses it, so the prefix separates the two lists exactly: a `pg_` name in `roles`, or a non-`pg_` name in `default_roles`, is rejected at startup with a message naming the list it belongs in.

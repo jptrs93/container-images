@@ -320,6 +320,17 @@ func TestValidateRejectsPasswordOnNoLoginRole(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsReplicationOnNoLoginRole(t *testing.T) {
+	cfg := Config{Roles: []Role{{Name: "repl", NoLogin: true, Replication: true}}}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "which cannot log in") {
+		t.Fatalf("Validate() error = %v, want replication-on-nologin error", err)
+	}
+	cfg = Config{Roles: []Role{{Name: "repl", Replication: true}}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v, want replication login role to be accepted", err)
+	}
+}
+
 func TestLoadRejectsMultipleYAMLDocuments(t *testing.T) {
 	path := t.TempDir() + "/config.yaml"
 	if err := os.WriteFile(path, []byte("settings:\n  max_connections: 10\n---\nsettings:\n  max_connections: 20\n"), 0600); err != nil {

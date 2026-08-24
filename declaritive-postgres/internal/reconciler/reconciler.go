@@ -54,7 +54,7 @@ func Reconcile(ctx context.Context, cfg config.Config, initDB *config.InitDBOpti
 		if err != nil {
 			return summary, err
 		}
-		if err := ensureRole(ctx, admin, name, password, role.CanLogin()); err != nil {
+		if err := ensureRole(ctx, admin, name, password, role.CanLogin(), role.Replication); err != nil {
 			return summary, err
 		}
 	}
@@ -808,26 +808,36 @@ func revokeSchemaPrivileges(ctx context.Context, tx pgx.Tx, role, schema string,
 	return nil
 }
 
-func ensureRole(ctx context.Context, conn *pgx.Conn, name, password string, canLogin bool) error {
-	attribute := "nologin"
+func ensureRole(ctx context.Context, conn *pgx.Conn, name, password string, canLogin, replication bool) error {
+	loginAttribute := "nologin"
 	if canLogin {
-		attribute = "login"
+		loginAttribute = "login"
+	}
+	replicationAttribute := "noreplication"
+	if replication {
+		replicationAttribute = "replication"
 	}
 
-	var currentLogin *bool
-	if err := conn.QueryRow(ctx, "select rolcanlogin from pg_roles where rolname = $1", name).Scan(&currentLogin); err != nil && err != pgx.ErrNoRows {
+	var currentLogin, currentReplication *bool
+	if err := conn.QueryRow(ctx, "select rolcanlogin, rolreplication from pg_roles where rolname = $1", name).Scan(&currentLogin, &currentReplication); err != nil && err != pgx.ErrNoRows {
 		return fmt.Errorf("check role %q: %w", name, err)
 	}
-	switch {
-	case currentLogin == nil:
-		if _, err := conn.Exec(ctx, "create role "+identifier(name)+" "+attribute); err != nil {
+	if currentLogin == nil {
+		if _, err := conn.Exec(ctx, "create role "+identifier(name)+" "+loginAttribute+" "+replicationAttribute); err != nil {
 			return fmt.Errorf("create role %q: %w", name, err)
 		}
-	case *currentLogin != canLogin:
-		// Login is reconciled like everything else, so turning a role into a group
-		// after the fact takes its ability to connect away.
-		if _, err := conn.Exec(ctx, "alter role "+identifier(name)+" "+attribute); err != nil {
-			return fmt.Errorf("set %s on role %q: %w", attribute, name, err)
+	} else {
+		// Both attributes are reconciled like everything else, in either
+		// direction, so one granted by hand converges back to the declaration.
+		if *currentLogin != canLogin {
+			if _, err := conn.Exec(ctx, "alter role "+identifier(name)+" "+loginAttribute); err != nil {
+				return fmt.Errorf("set %s on role %q: %w", loginAttribute, name, err)
+			}
+		}
+		if *currentReplication != replication {
+			if _, err := conn.Exec(ctx, "alter role "+identifier(name)+" "+replicationAttribute); err != nil {
+				return fmt.Errorf("set %s on role %q: %w", replicationAttribute, name, err)
+			}
 		}
 	}
 	if password != "" {
