@@ -332,6 +332,8 @@ Plain-text output — initdb, pgBackRest, anything a process writes straight to 
 {"time":"2026-08-23T02:00:00.123456789Z","level":"INFO","msg":"P00   INFO: archive-push command begin"}
 ```
 
+pgBackRest reaches stdout by two routes. Commands the supervisor runs itself — stanza-create, check, backup, restore — have their console output captured directly. The archive commands cannot be captured that way: archive-push and archive-get run under PostgreSQL, and each spawns an async worker that detaches from everything. Those commands instead log at `detail` level through `/var/log/pgbackrest`, where the supervisor has replaced their log files with named pipes it relays — so async archive errors that pgBackRest would otherwise bury in a file (`unable to push WAL file ... check '...-archive-push-async.log' for errors`) appear on stdout like everything else, and still nothing is written to disk. `detail`-marked lines relay at level `DEBUG`.
+
 Because every line is JSON, `docker logs` output can be filtered directly, for example `docker logs app 2>&1 | jq 'select(.level == "ERROR")'`, and shippers such as Loki, Vector, or Fluent Bit ingest it with a plain JSON parser and no multiline configuration.
 
 The transport settings (`logging_collector`, `log_destination`, `log_directory`, `log_filename`, `log_rotation_age`, `log_rotation_size`, `log_file_mode`, `log_timezone`) are managed by the supervisor and rejected in `settings`, so the format cannot be broken by configuration. Content settings such as `log_min_messages`, `log_statement`, and `log_min_duration_statement` remain yours to set.
@@ -339,6 +341,8 @@ The transport settings (`logging_collector`, `log_destination`, `log_directory`,
 ## Backup And Restore
 
 With pgBackRest enabled, PostgreSQL starts even if S3 is unavailable, but health remains unhealthy until the repository check succeeds. Health covers PostgreSQL readiness, reconciliation, and the latest backup maintenance result. It is available through the Docker health check and `GET /healthz` on port `8081`.
+
+`s3.host` accepts a hostname, an IPv4 address, or an IPv6 address. An IPv6 address cannot be handed to pgBackRest directly — it places the endpoint verbatim in the HTTP `Host` header, where an unbracketed IPv6 literal is illegal and S3 servers reject it (`InvalidRequest ... too many colons in address`) — so the supervisor maps the address to the hosts-file alias `pgbackrest-s3-endpoint` and configures that name instead. With `verify_tls: true` the server certificate is then checked against the alias, so a certificate for an IPv6 endpoint must include `pgbackrest-s3-endpoint` as a subject alternative name.
 
 Run backup commands as the `postgres` operating-system user:
 

@@ -38,21 +38,30 @@ func EnsureLogFifos() error {
 		return fmt.Errorf("own log directory: %w", err)
 	}
 	for _, path := range []string{jsonLogPath(), rawLogPath()} {
-		info, err := os.Lstat(path)
-		if err == nil && info.Mode()&os.ModeNamedPipe == 0 {
-			if err := os.Remove(path); err != nil {
-				return fmt.Errorf("replace %s with a pipe: %w", path, err)
-			}
-			err = os.ErrNotExist
+		if err := ensureFifo(path); err != nil {
+			return err
 		}
-		if err != nil {
-			if err := syscall.Mkfifo(path, 0600); err != nil {
-				return fmt.Errorf("create log pipe %s: %w", path, err)
-			}
+	}
+	return nil
+}
+
+// ensureFifo makes path a named pipe owned by the postgres user, replacing any
+// regular file left behind at that path.
+func ensureFifo(path string) error {
+	info, err := os.Lstat(path)
+	if err == nil && info.Mode()&os.ModeNamedPipe == 0 {
+		if err := os.Remove(path); err != nil {
+			return fmt.Errorf("replace %s with a pipe: %w", path, err)
 		}
-		if err := os.Chown(path, postgresUID, postgresGID); err != nil {
-			return fmt.Errorf("own log pipe %s: %w", path, err)
+		err = os.ErrNotExist
+	}
+	if err != nil {
+		if err := syscall.Mkfifo(path, 0600); err != nil {
+			return fmt.Errorf("create log pipe %s: %w", path, err)
 		}
+	}
+	if err := os.Chown(path, postgresUID, postgresGID); err != nil {
+		return fmt.Errorf("own log pipe %s: %w", path, err)
 	}
 	return nil
 }

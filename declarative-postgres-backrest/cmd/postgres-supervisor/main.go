@@ -129,6 +129,11 @@ func run() error {
 	if err := logging.StartLogTailers(); err != nil {
 		return err
 	}
+	if manager != nil {
+		if err := logging.StartPGBackRestLogRelay(manager.Stanza); err != nil {
+			return err
+		}
+	}
 	// The tailers read the collector pipes until the process exits; give them a
 	// moment to drain PostgreSQL's final shutdown messages before returning.
 	defer time.Sleep(300 * time.Millisecond)

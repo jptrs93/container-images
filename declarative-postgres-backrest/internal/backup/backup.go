@@ -22,10 +22,30 @@ import (
 )
 
 const (
-	configPath = "/etc/pgbackrest/pgbackrest.conf"
-	stateRoot  = "/var/lib/postgresql/pgbackrest-state"
-	spoolPath  = "/var/lib/postgresql/pgbackrest-spool"
+	configPath  = "/etc/pgbackrest/pgbackrest.conf"
+	stateRoot   = "/var/lib/postgresql/pgbackrest-state"
+	spoolPath   = "/var/lib/postgresql/pgbackrest-spool"
+	hostsPath   = "/etc/hosts"
+	s3HostAlias = "pgbackrest-s3-endpoint"
 )
+
+// aliasS3Host points s3HostAlias at the address in the hosts file, replacing
+// any previous alias line. The runtime bind-mounts the hosts file, so it is
+// rewritten in place rather than atomically renamed.
+func aliasS3Host(path, address string) error {
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	kept := make([]string, 0, 8)
+	for _, line := range strings.Split(strings.TrimRight(string(contents), "\n"), "\n") {
+		if !strings.Contains(line, s3HostAlias) {
+			kept = append(kept, line)
+		}
+	}
+	kept = append(kept, address+" "+s3HostAlias)
+	return os.WriteFile(path, []byte(strings.Join(kept, "\n")+"\n"), 0644)
+}
 
 type Manager struct {
 	Stanza          string
@@ -66,8 +86,16 @@ func New(pgData, postgresUser string, connection config.ConnectionOptions, optio
 
 	verify := "n"
 	host := options.S3Host
-	if ip := net.ParseIP(strings.Trim(host, "[]")); ip != nil && ip.To4() == nil {
-		host = "[" + strings.Trim(host, "[]") + "]"
+	// pgBackRest sends its endpoint verbatim as the HTTP Host header, where a
+	// raw IPv6 address is illegal (RFC 9110 requires brackets) and S3 servers
+	// reject it. Brackets in the endpoint don't help — pgBackRest strips them
+	// before building the header — so give the address a hosts-file name and
+	// configure that instead.
+	if address := strings.Trim(host, "[]"); net.ParseIP(address) != nil && strings.Contains(address, ":") {
+		if err := aliasS3Host(hostsPath, address); err != nil {
+			return nil, fmt.Errorf("alias IPv6 S3 host: %w", err)
+		}
+		host = s3HostAlias
 	}
 	endpoint := "http://" + host
 	if options.S3VerifyTLS {
@@ -97,7 +125,7 @@ func New(pgData, postgresUser string, connection config.ConnectionOptions, optio
 		"repo1-block=y",
 		"start-fast=y",
 		"log-level-console=info",
-		"log-level-file=detail",
+		"log-level-file=off",
 		"spool-path=" + spoolPath,
 	}
 	if options.S3CAFile != "" {
@@ -109,6 +137,22 @@ func New(pgData, postgresUser string, connection config.ConnectionOptions, optio
 	if options.RepositoryCipherPass != "" {
 		lines = append(lines, "repo1-cipher-type=aes-256-cbc", "repo1-cipher-pass="+options.RepositoryCipherPass)
 	}
+	// The archive commands run under PostgreSQL rather than the supervisor, and
+	// their async halves detach from even that, so they are the one part of
+	// pgBackRest that cannot be captured from a console stream. They log at
+	// detail through files instead — named pipes the supervisor relays to
+	// stdout (logging.StartPGBackRestLogRelay) — with the console off so the
+	// foreground lines are not also echoed through PostgreSQL's stderr.
+	lines = append(lines,
+		"",
+		"[global:archive-push]",
+		"log-level-console=off",
+		"log-level-file=detail",
+		"",
+		"[global:archive-get]",
+		"log-level-console=off",
+		"log-level-file=detail",
+	)
 	lines = append(lines, "", "["+options.Stanza+"]", "pg1-path="+pgData, "pg1-port="+connection.Port, "pg1-socket-path="+connection.SocketDirectory, "pg1-user="+postgresUser)
 	if err := os.WriteFile(configPath, []byte(strings.Join(lines, "\n")+"\n"), 0640); err != nil {
 		return nil, err
