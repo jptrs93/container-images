@@ -1,4 +1,4 @@
-FROM golang:1.25.12-trixie AS supervisor-build
+FROM golang:1.26.11-trixie AS supervisor-build
 
 WORKDIR /src
 
@@ -9,7 +9,7 @@ COPY declaritive-postgres/cmd ./cmd
 COPY declaritive-postgres/internal ./internal
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags='-s -w' -o /postgres-supervisor ./cmd/postgres-supervisor
 
-FROM postgres:18.4-trixie
+FROM postgres:18.7-trixie
 
 COPY --from=supervisor-build /postgres-supervisor /usr/local/bin/postgres-supervisor
 

@@ -3,8 +3,8 @@ name: Build container image
 on:
   push:
     tags:
-      - 'declarative-postgres-backrest/18.4_2.58.0_v*'
-      - 'declaritive-postgres/18.4_v*'
+      - 'declarative-postgres-backrest/*_v*'
+      - 'declaritive-postgres/*_v*'
 
 jobs:
   build:

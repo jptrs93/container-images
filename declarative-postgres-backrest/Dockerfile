@@ -1,4 +1,4 @@
-FROM golang:1.25.12-trixie AS supervisor-build
+FROM golang:1.26.11-trixie AS supervisor-build
 
 WORKDIR /src
 
@@ -9,7 +9,7 @@ COPY declarative-postgres-backrest/cmd ./cmd
 COPY declarative-postgres-backrest/internal ./internal
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags='-s -w' -o /postgres-supervisor ./cmd/postgres-supervisor
 
-FROM postgres:18.4-trixie
+FROM postgres:18.7-trixie
 
 ARG PGBACKREST_PACKAGE_VERSION=2.58.0-1.pgdg13+1
 
