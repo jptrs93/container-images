@@ -199,6 +199,7 @@ Avoid `pg_read_server_files`, `pg_write_server_files`, and `pg_execute_server_pr
 ## Lifecycle
 
 - The container entrypoint is a supervisor process.
+- As PID 1 of the container, the supervisor starts itself a second time and the first process stays behind as a minimal init. It forwards signals to the second, reaps the orphaned processes the kernel hands to PID 1 (the temporary server the official entrypoint runs during initialization, for example), and exits with the second process's exit code. When something else is PID 1, such as `docker run --init`, the supervisor runs as a single process and leaves reaping to that init.
 - The supervisor first parses and validates the configuration, generates the PostgreSQL configuration files, and then starts the main PostgreSQL process. If the configuration is invalid, the container crashes.
 - If the main PostgreSQL process dies at any point, the supervisor propagates its failure and the container crashes.
 - Once the PostgreSQL instance is running, the supervisor runs the reconciler to reconcile users and roles, permissions, and other declared database state. If reconciliation fails, the container crashes.

@@ -1,4 +1,4 @@
-FROM golang:1.26.11-trixie AS supervisor-build
+FROM golang:1.27.4-trixie AS supervisor-build
 
 WORKDIR /src
 

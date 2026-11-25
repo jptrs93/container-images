@@ -1,4 +1,4 @@
-FROM golang:1.26.11-trixie AS supervisor-build
+FROM golang:1.27.4-trixie AS supervisor-build
 
 WORKDIR /src
 
@@ -11,7 +11,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags='-s -w' -o /postgres-su
 
 FROM postgres:18.7-trixie
 
-ARG PGBACKREST_PACKAGE_VERSION=2.58.0-1.pgdg13+1
+ARG PGBACKREST_PACKAGE_VERSION=2.60.1-1.pgdg13+1
 
 RUN set -eux; \
     apt-get update; \

@@ -53,6 +53,10 @@ container_stopped() {
     test "$(docker inspect -f '{{.State.Running}}' "$1")" = false
 }
 
+no_defunct_processes() {
+    test "$(docker exec "$1" sh -c 'grep -ls "^State:[[:space:]]*Z" /proc/[0-9]*/status | wc -l')" -eq 0
+}
+
 trap cleanup EXIT
 docker run --rm --entrypoint sh "$image" -c '! command -v pgbackrest'
 docker volume create "$primary_volume" >/dev/null
@@ -102,6 +106,10 @@ if ! wait_for supervisor-ready docker exec "$primary" postgres-supervisor health
     exit 1
 fi
 docker exec "$primary" test ! -e /etc/pgbackrest/pgbackrest.conf
+
+# The supervisor is PID 1, so the entrypoint's temporary init server is
+# reparented to it when initialization ends. It must not be left defunct.
+wait_for no-defunct-after-startup no_defunct_processes "$primary"
 docker exec "$primary" psql -U integration_admin -d app -tAc 'show archive_mode' | grep -qx off
 docker exec "$primary" psql -U integration_admin -d app -tAc 'show max_connections' | grep -qx 50
 docker exec "$primary" psql -U integration_admin -d app -tAc 'show listen_addresses' | grep -qx 127.0.0.1

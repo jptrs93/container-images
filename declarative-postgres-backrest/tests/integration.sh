@@ -64,6 +64,14 @@ container_stopped() {
     test "$(docker inspect -f '{{.State.Running}}' "$1")" = false
 }
 
+no_defunct_processes() {
+    test "$(docker exec "$1" sh -c 'grep -ls "^State:[[:space:]]*Z" /proc/[0-9]*/status | wc -l')" -eq 0
+}
+
+wal_archived_past() {
+    test "$(docker exec "$primary" psql -U integration_admin -d app -tAc 'select archived_count from pg_stat_archiver')" -gt "$1"
+}
+
 docker network create "$network" >/dev/null
 docker volume create "$primary_volume" >/dev/null
 docker volume create "$restore_volume" >/dev/null
@@ -141,6 +149,18 @@ if ! wait_for supervisor-ready docker exec "$primary" postgres-supervisor health
     exit 1
 fi
 wait_for initial-backup docker exec -u postgres "$primary" bash -c 'pgbackrest --stanza=integration --output=json info | grep -q '"'"'"label"'"'"''
+
+# The supervisor is PID 1, so every orphan in the container is reparented to it:
+# the entrypoint's temporary init server and the async worker each archive-push
+# detaches. None of them may be left defunct.
+wait_for no-defunct-after-startup no_defunct_processes "$primary"
+for _ in 1 2 3; do
+    archived="$(docker exec "$primary" psql -U integration_admin -d app -tAc 'select archived_count from pg_stat_archiver')"
+    docker exec "$primary" psql -U integration_admin -d app -c "select pg_logical_emit_message(true, 'integration', 'switch'); select pg_switch_wal();" >/dev/null
+    wait_for wal-archived wal_archived_past "$archived"
+done
+sleep 2
+wait_for no-defunct-after-archiving no_defunct_processes "$primary"
 docker exec "$primary" psql -U integration_admin -d app -tAc 'show max_connections' | grep -qx 50
 docker exec "$primary" psql -U integration_admin -d app -tAc 'show listen_addresses' | grep -qx 127.0.0.1
 docker exec "$primary" psql -U integration_admin -d app -tAc 'show port' | grep -qx 5433

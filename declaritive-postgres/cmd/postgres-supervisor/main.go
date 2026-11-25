@@ -32,6 +32,14 @@ func main() {
 		}
 		return
 	}
+	if os.Getpid() == 1 {
+		path, err := os.Executable()
+		if err != nil {
+			slog.Error("locate supervisor executable: " + err.Error())
+			os.Exit(1)
+		}
+		os.Exit(runInit(path, os.Args))
+	}
 	if err := run(); err != nil {
 		slog.Error(err.Error())
 		os.Exit(exitCode(err))
